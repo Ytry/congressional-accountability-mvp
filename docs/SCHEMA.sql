@@ -3,18 +3,18 @@
 
 CREATE TABLE legislators (
     id SERIAL PRIMARY KEY,
-    bioguide_id VARCHAR(12) UNIQUE NOT NULL,
-    full_name TEXT,
-    party VARCHAR(10),
-    state CHAR(2),
-    district INT,
-    chamber VARCHAR(10),
+    bioguide_id VARCHAR(20) UNIQUE NOT NULL,
+    full_name TEXT NOT NULL,
+    party VARCHAR(1) NOT NULL,
+    state VARCHAR(2) NOT NULL,
+    district INTEGER,
+    chamber VARCHAR(10) NOT NULL,
     portrait_url TEXT,
     official_website_url TEXT,
-    office_contact JSONB,
+    office_address TEXT,
+    office_phone TEXT,
     bio_snapshot TEXT
 );
-
 CREATE TABLE service_history (
     id SERIAL PRIMARY KEY,
     legislator_id INT REFERENCES legislators(id),
