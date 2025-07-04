@@ -1,16 +1,22 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+DB_CONFIG = {
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT"),
+}
+
+API_KEY = os.getenv("CONGRESS_API_KEY")
+
 import requests
 import psycopg2
 import time
 
-DB_CONFIG = {
-    "dbname": "yourdbname",
-    "user": "youruser",
-    "password": "yourpassword",
-    "host": "localhost",
-    "port": "5432"
-}
 
-API_KEY = "YOUR_OPENSECRETS_API_KEY"
 BASE_URL = "https://www.opensecrets.org/api/"
 
 def get_finance_data(bioguide_id_list):
