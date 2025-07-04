@@ -11,6 +11,8 @@ const legislatorsRoute = require('./routes/legislators');
 const votesRoute = require('./routes/votes');
 const billsRoute = require('./routes/bills');
 const financeRoute = require('./routes/finance');
+const etlRoutes = require('./routes/etl');
+app.use('/api/etl', etlRoutes);
 
 app.use('/api/legislators', legislatorsRoute);
 app.use('/api/votes', votesRoute);
