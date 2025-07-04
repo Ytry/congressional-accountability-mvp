@@ -32,29 +32,7 @@ def parse_legislator_data(member):
         'bio_snapshot': member.get('description')
     }
 
-def insert_legislator(cursor, legislator):
-    cursor.execute("""
-        INSERT INTO legislators (
-            bioguide_id, full_name, party, state, district, chamber,
-            portrait_url, official_website_url, address, phone, bio_snapshot
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (bioguide_id) DO UPDATE SET
-            full_name = EXCLUDED.full_name,
-            party = EXCLUDED.party,
-            state = EXCLUDED.state,
-            district = EXCLUDED.district,
-            chamber = EXCLUDED.chamber,
-            portrait_url = EXCLUDED.portrait_url,
-            official_website_url = EXCLUDED.official_website_url,
-            address = EXCLUDED.address,
-            phone = EXCLUDED.phone,
-            bio_snapshot = EXCLUDED.bio_snapshot;
-    """, (
-        legislator['bioguide_id'], legislator['full_name'], legislator['party'],
-        legislator['state'], legislator['district'], legislator['chamber'],
-        legislator['portrait_url'], legislator['official_website_url'],
-        legislator['address'], legislator['phone'], legislator['bio_snapshot']
-    ))
+
 
 def run():
     print("Starting legislators ETL process...")
