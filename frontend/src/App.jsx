@@ -5,7 +5,7 @@ function App() {
   const [legislators, setLegislators] = useState([]);
 
   useEffect(() => {
-    fetch('http://localhost:3000/api/legislators')
+    fetch(`${import.meta.env.VITE_API_URL}/api/legislators`)
       .then(res => res.json())
       .then(data => setLegislators(data));
   }, []);
