@@ -15,14 +15,22 @@ BASE_URL = "https://api.congress.gov/v3/member"
 
 def insert_legislator(cursor, legislator):
     office_contact = {
-        'address': legislator.get('address'),
-        'phone': legislator.get('phone')
+        'address': legislator.get('address', ''),
+        'phone': legislator.get('phone', '')
     }
 
     cursor.execute("""
         INSERT INTO legislators (
-            bioguide_id, full_name, party, state, district, chamber,
-            portrait_url, official_website_url, office_contact, bio_snapshot
+            bioguide_id,
+            full_name,
+            party,
+            state,
+            district,
+            chamber,
+            portrait_url,
+            official_website_url,
+            office_contact,
+            bio_snapshot
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (bioguide_id) DO UPDATE SET
             full_name = EXCLUDED.full_name,
@@ -35,10 +43,16 @@ def insert_legislator(cursor, legislator):
             office_contact = EXCLUDED.office_contact,
             bio_snapshot = EXCLUDED.bio_snapshot;
     """, (
-        legislator['bioguide_id'], legislator['full_name'], legislator['party'],
-        legislator['state'], legislator['district'], legislator['chamber'],
-        legislator['portrait_url'], legislator['official_website_url'],
-        json.dumps(office_contact), legislator['bio_snapshot']
+        legislator['bioguide_id'],
+        legislator['full_name'],
+        legislator['party'],
+        legislator['state'],
+        legislator['district'],
+        legislator['chamber'],
+        legislator['portrait_url'],
+        legislator['official_website_url'],
+        json.dumps(office_contact),
+        legislator['bio_snapshot']
     ))
 def fetch_legislators(offset=0):
     url = f"{BASE_URL}?api_key={API_KEY}&offset={offset}"
