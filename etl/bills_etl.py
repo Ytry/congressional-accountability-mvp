@@ -1,8 +1,21 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+DB_CONFIG = {
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT"),
+}
+
+API_KEY = os.getenv("CONGRESS_API_KEY")
+
 import requests
 import psycopg2
 from datetime import datetime
 
-API_KEY = "5fjyzhIQuWMgjz2uInRG5NNAEkI7RkouiEsKElcf"
 BASE_URL = "https://api.congress.gov/v3/bill"
 
 # You can change this to pull more results, paginate, or iterate through multiple Congress sessions
@@ -12,13 +25,6 @@ PARAMS = {
     "limit": 25
 }
 
-DB_CONFIG = {
-    "dbname": "yourdbname",
-    "user": "youruser",
-    "password": "yourpassword",
-    "host": "localhost",
-    "port": "5432"
-}
 
 def fetch_bills():
     print("Fetching bills...")
