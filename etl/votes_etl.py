@@ -1,3 +1,17 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+DB_CONFIG = {
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT"),
+}
+
+API_KEY = os.getenv("CONGRESS_API_KEY")
+
 
 import requests
 import xml.etree.ElementTree as ET
@@ -5,13 +19,6 @@ import csv
 import psycopg2
 from datetime import datetime
 
-DB_CONFIG = {
-    "dbname": "yourdbname",
-    "user": "youruser",
-    "password": "yourpassword",
-    "host": "localhost",
-    "port": "5432"
-}
 
 HOUSE_BASE_URL = "https://clerk.house.gov/evs/{year}/roll{roll}.xml"
 SENATE_BASE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll}.csv"
