@@ -1,22 +1,17 @@
-import React, { useEffect, useState } from 'react';
-import LegislatorCard from './components/LegislatorCard';
+
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import LegislatorList from './components/LegislatorList';
+import LegislatorProfile from './components/LegislatorProfile';
 
 function App() {
-  const [legislators, setLegislators] = useState([]);
-
-  useEffect(() => {
-    fetch(`${import.meta.env.VITE_API_URL}/api/legislators`)
-      .then(res => res.json())
-      .then(data => setLegislators(data));
-  }, []);
-
   return (
-    <div>
-      <h1>Congressional Accountability</h1>
-      {legislators.map(leg => (
-        <LegislatorCard key={leg.id} legislator={leg} />
-      ))}
-    </div>
+    <Router>
+      <Routes>
+        <Route path="/" element={<LegislatorList />} />
+        <Route path="/legislators/:id" element={<LegislatorProfile />} />
+      </Routes>
+    </Router>
   );
 }
 
