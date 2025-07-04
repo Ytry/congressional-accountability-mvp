@@ -6,7 +6,7 @@ function LegislatorList() {
   const [legislators, setLegislators] = useState([]);
 
   useEffect(() => {
-    fetch(`${'https://congressional-accountability-mvp.onrender.com' || import.meta.env.VITE_API_URL}/api/legislators`)
+    import.meta.env.VITE_API_URL}/api/legislators`)
       .then(res => res.json())
       .then(data => setLegislators(data));
   }, []);
