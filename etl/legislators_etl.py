@@ -35,12 +35,12 @@ def connect():
 # --- Extract YAML data ---
 def extract_legislators():
     try:
-        logging.info(f"Fetching data from {DATA_SOURCE_URL}")
+        logging.info(f"📥 Fetching data from {DATA_SOURCE_URL}")
         response = requests.get(DATA_SOURCE_URL)
         response.raise_for_status()
         return yaml.safe_load(response.text)
     except Exception as e:
-        logging.critical(f"Failed to fetch or parse YAML: {e}")
+        logging.critical(f"❌ Failed to fetch or parse YAML: {e}")
         raise
 
 # --- Parse a single legislator record ---
@@ -50,7 +50,7 @@ def parse_legislator(raw) -> Optional[dict]:
         last_term = raw["terms"][-1]
 
         if not last_term.get("end"):
-            logging.debug(f"Skipping {bioguide_id}: missing 'end' date.")
+            logging.debug(f"⏭️ Skipping {bioguide_id}: missing 'end' date.")
             return None
 
         full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
@@ -82,7 +82,7 @@ def parse_legislator(raw) -> Optional[dict]:
             "terms": raw["terms"]
         }
     except KeyError as e:
-        logging.warning(f"Missing key while parsing legislator: {e}")
+        logging.warning(f"⚠️ Missing key while parsing legislator: {e}")
         return None
 
 # --- Insert logic ---
@@ -119,7 +119,7 @@ def insert_service_history(cur, legislator_id, terms):
                 ON CONFLICT (legislator_id, term_start) DO NOTHING;
             """, (legislator_id, term.get("start"), term.get("end")))
         except Exception as e:
-            logging.warning(f"Service history failed for {legislator_id}: {e}")
+            logging.warning(f"⚠️ Service history insert failed for {legislator_id}: {e}")
 
 def insert_committee_roles(cur, legislator_id, terms):
     for term in terms:
@@ -139,7 +139,7 @@ def insert_committee_roles(cur, legislator_id, terms):
                     committee.get("position", "Member")
                 ))
             except Exception as e:
-                logging.warning(f"Committee insert failed for {legislator_id}: {e}")
+                logging.warning(f"⚠️ Committee insert failed for {legislator_id}: {e}")
 
 def insert_leadership_roles(cur, legislator_id, terms):
     for term in terms:
@@ -152,17 +152,17 @@ def insert_leadership_roles(cur, legislator_id, terms):
                     ON CONFLICT (legislator_id, congress, role) DO NOTHING;
                 """, (legislator_id, term.get("congress"), role))
             except Exception as e:
-                logging.warning(f"Leadership insert failed for {legislator_id}: {e}")
+                logging.warning(f"⚠️ Leadership insert failed for {legislator_id}: {e}")
 
 # --- Main run block ---
 def run():
-    logging.info("Starting legislator ETL job...")
+    logging.info("🚀 Starting legislator ETL job...")
     try:
         conn = connect()
         cur = conn.cursor()
         data = extract_legislators()
     except Exception as e:
-        logging.critical(f"Startup failure: {e}")
+        logging.critical(f"❌ Startup failure: {e}")
         return
 
     success = skipped = failed = 0
@@ -178,6 +178,7 @@ def run():
             insert_committee_roles(cur, legislator_id, leg["terms"])
             insert_leadership_roles(cur, legislator_id, leg["terms"])
             conn.commit()
+            logging.info(f"✅ Processed: {leg['bioguide_id']} ({leg['full_name']})")
             success += 1
         except Exception as e:
             logging.error(f"❌ Failed for {leg['bioguide_id']}: {e}")
@@ -187,7 +188,10 @@ def run():
     cur.close()
     conn.close()
 
-    logging.info(f"✅ Inserted: {success} | ❌ Failed: {failed} | ⏭️ Skipped: {skipped}")
+    logging.info("🏁 ETL Summary")
+    logging.info(f"✅ Inserted: {success}")
+    logging.info(f"⏭️ Skipped: {skipped}")
+    logging.info(f"❌ Failed: {failed}")
 
 if __name__ == "__main__":
     run()
