@@ -46,15 +46,15 @@ def extract_legislators():
 # --- Parse a single legislator record ---
 def parse_legislator(raw) -> Optional[dict]:
     try:
-        bioguide_id = raw["id"].get("bioguide")
+        bioguide_id = raw["id"]["bioguide"]
         last_term = raw["terms"][-1]
 
-        if not bioguide_id or not last_term.get("end"):
-            logging.debug(f"Skipping invalid record with missing ID or term end.")
+        if not last_term.get("end"):
+            logging.debug(f"Skipping {bioguide_id}: missing 'end' date.")
             return None
 
         full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
-        party = last_term.get("party", "")[:1]  # Safe truncate
+        party = last_term.get("party", "")[0]
         chamber = last_term.get("type", "").capitalize()
         state = last_term.get("state")
         district = last_term.get("district") if chamber == "House" else None
@@ -62,17 +62,11 @@ def parse_legislator(raw) -> Optional[dict]:
         website = last_term.get("url")
 
         contact = {
-            "address": last_term.get("address", ""),
-            "phone": last_term.get("phone", "")
+            "address": last_term.get("address"),
+            "phone": last_term.get("phone")
         }
 
-        birthday = raw['bio'].get("birthday", "")
-        gender = raw['bio'].get("gender", "")
-        bio_snapshot = f"{birthday} – {gender.upper()[:1]}"  # Truncate to 1 char max for gender if needed
-
-        # Truncate bio_snapshot if exceeds column limits (optional)
-        if len(bio_snapshot) > 255:
-            bio_snapshot = bio_snapshot[:252] + "..."
+        bio_snapshot = f"{raw['bio'].get('birthday', '')} – {raw['bio'].get('gender', '')}"
 
         return {
             "bioguide_id": bioguide_id,
@@ -87,8 +81,8 @@ def parse_legislator(raw) -> Optional[dict]:
             "bio_snapshot": bio_snapshot,
             "terms": raw["terms"]
         }
-    except Exception as e:
-        logging.warning(f"Skipping legislator due to parsing error: {e}")
+    except KeyError as e:
+        logging.warning(f"Missing key while parsing legislator: {e}")
         return None
 
 # --- Insert logic ---
@@ -162,7 +156,7 @@ def insert_leadership_roles(cur, legislator_id, terms):
 
 # --- Main run block ---
 def run():
-    logging.info("🚀 Starting legislator ETL job...")
+    logging.info("Starting legislator ETL job...")
     try:
         conn = connect()
         cur = conn.cursor()
@@ -186,24 +180,14 @@ def run():
             conn.commit()
             success += 1
         except Exception as e:
-            logging.error(f"❌ DB error for {leg['bioguide_id']}: {e}")
+            logging.error(f"❌ Failed for {leg['bioguide_id']}: {e}")
             conn.rollback()
             failed += 1
 
     cur.close()
     conn.close()
 
-    summary = {
-        "inserted": success,
-        "failed": failed,
-        "skipped": skipped
-    }
-
-    logging.info(f"✅ ETL complete: {summary}")
-    print(json.dumps({
-        "message": "ETL script completed successfully",
-        "output": summary
-    }, indent=2))
+    logging.info(f"✅ Inserted: {success} | ❌ Failed: {failed} | ⏭️ Skipped: {skipped}")
 
 if __name__ == "__main__":
     run()
