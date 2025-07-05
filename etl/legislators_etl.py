@@ -3,11 +3,11 @@ import psycopg2
 import json
 import os
 
-DB_NAME = os.getenv("dbname", "your_db_name")
-DB_USER = os.getenv("user", "your_db_user")
-DB_PASSWORD = os.getenv("password", "your_db_password")
-DB_HOST = os.getenv("host", "localhost")
-DB_PORT = os.getenv("port", "5432")
+DB_NAME = os.getenv("dbname")
+DB_USER = os.getenv("user")
+DB_PASSWORD = os.getenv("password")
+DB_HOST = os.getenv("host")
+DB_PORT = os.getenv("port")
 
 DATA_SOURCE_URL = "https://theunitedstates.io/congress-legislators/legislators-current.json"
 
