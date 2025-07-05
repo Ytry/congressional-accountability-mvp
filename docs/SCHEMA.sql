@@ -14,7 +14,7 @@ CREATE TABLE legislators (
     district         INT,
     portrait_url     TEXT,
     official_website_url TEXT,
-    office_contact   JSONB,                              -- address & phone live here
+    office_contact   TEXT,                              -- address & phone live here
     bio_snapshot     TEXT,
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );
