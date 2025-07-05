@@ -9,6 +9,10 @@ DB_PASSWORD = os.getenv("password")
 DB_HOST = os.getenv("host")
 DB_PORT = os.getenv("port")
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+res = requests.get(DATA_SOURCE_URL, verify=False)
+
 DATA_SOURCE_URL = "https://theunitedstates.io/congress-legislators/legislators-current.json"
 
 def connect():
