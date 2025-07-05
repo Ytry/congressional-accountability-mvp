@@ -17,7 +17,7 @@ DB_PORT = os.getenv("port")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Data source
-DATA_SOURCE_URL = "https://theunitedstates.io/congress-legislators/legislators-current.json"
+DATA_SOURCE_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.json"
 
 # Create requests session with retries
 session = requests.Session()
