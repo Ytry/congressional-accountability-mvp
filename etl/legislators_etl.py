@@ -37,4 +37,173 @@ def extract_legislators():
     try:
         logging.info(f"Fetching data from {DATA_SOURCE_URL}")
         response = requests.get(DATA_SOURCE_URL)
-        response.raise_for_s
+        response.raise_for_status()
+        return yaml.safe_load(response.text)
+    except Exception as e:
+        logging.critical(f"Failed to fetch or parse YAML: {e}")
+        raise
+
+# --- Parse a single legislator record ---
+def parse_legislator(raw) -> Optional[dict]:
+    try:
+        bioguide_id = raw["id"].get("bioguide")
+        last_term = raw["terms"][-1]
+
+        if not bioguide_id or not last_term.get("end"):
+            logging.debug(f"Skipping invalid record with missing ID or term end.")
+            return None
+
+        full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
+        party = last_term.get("party", "")[:1]  # Safe truncate
+        chamber = last_term.get("type", "").capitalize()
+        state = last_term.get("state")
+        district = last_term.get("district") if chamber == "House" else None
+        portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
+        website = last_term.get("url")
+
+        contact = {
+            "address": last_term.get("address", ""),
+            "phone": last_term.get("phone", "")
+        }
+
+        birthday = raw['bio'].get("birthday", "")
+        gender = raw['bio'].get("gender", "")
+        bio_snapshot = f"{birthday} – {gender.upper()[:1]}"  # Truncate to 1 char max for gender if needed
+
+        # Truncate bio_snapshot if exceeds column limits (optional)
+        if len(bio_snapshot) > 255:
+            bio_snapshot = bio_snapshot[:252] + "..."
+
+        return {
+            "bioguide_id": bioguide_id,
+            "full_name": full_name,
+            "party": party,
+            "chamber": chamber,
+            "state": state,
+            "district": district,
+            "portrait_url": portrait_url,
+            "official_website_url": website,
+            "office_contact": contact,
+            "bio_snapshot": bio_snapshot,
+            "terms": raw["terms"]
+        }
+    except Exception as e:
+        logging.warning(f"Skipping legislator due to parsing error: {e}")
+        return None
+
+# --- Insert logic ---
+def insert_legislator(cur, leg):
+    cur.execute("""
+        INSERT INTO legislators (
+            bioguide_id, full_name, party, chamber, state, district,
+            portrait_url, official_website_url, office_contact, bio_snapshot
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        ON CONFLICT (bioguide_id) DO UPDATE SET
+            full_name = EXCLUDED.full_name,
+            party = EXCLUDED.party,
+            chamber = EXCLUDED.chamber,
+            state = EXCLUDED.state,
+            district = EXCLUDED.district,
+            portrait_url = EXCLUDED.portrait_url,
+            official_website_url = EXCLUDED.official_website_url,
+            office_contact = EXCLUDED.office_contact,
+            bio_snapshot = EXCLUDED.bio_snapshot
+        RETURNING id;
+    """, (
+        leg["bioguide_id"], leg["full_name"], leg["party"], leg["chamber"],
+        leg["state"], leg["district"], leg["portrait_url"], leg["official_website_url"],
+        json.dumps(leg["office_contact"]), leg["bio_snapshot"]
+    ))
+    return cur.fetchone()[0]
+
+def insert_service_history(cur, legislator_id, terms):
+    for term in terms:
+        try:
+            cur.execute("""
+                INSERT INTO service_history (legislator_id, term_start, term_end)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (legislator_id, term_start) DO NOTHING;
+            """, (legislator_id, term.get("start"), term.get("end")))
+        except Exception as e:
+            logging.warning(f"Service history failed for {legislator_id}: {e}")
+
+def insert_committee_roles(cur, legislator_id, terms):
+    for term in terms:
+        for committee in term.get("committees", []):
+            try:
+                cur.execute("""
+                    INSERT INTO committee_assignments (
+                        legislator_id, congress, committee_name,
+                        subcommittee_name, role
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING;
+                """, (
+                    legislator_id,
+                    term.get("congress"),
+                    committee.get("name"),
+                    committee.get("subcommittee"),
+                    committee.get("position", "Member")
+                ))
+            except Exception as e:
+                logging.warning(f"Committee insert failed for {legislator_id}: {e}")
+
+def insert_leadership_roles(cur, legislator_id, terms):
+    for term in terms:
+        role = term.get("leadership_title")
+        if role:
+            try:
+                cur.execute("""
+                    INSERT INTO leadership_roles (legislator_id, congress, role)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (legislator_id, congress, role) DO NOTHING;
+                """, (legislator_id, term.get("congress"), role))
+            except Exception as e:
+                logging.warning(f"Leadership insert failed for {legislator_id}: {e}")
+
+# --- Main run block ---
+def run():
+    logging.info("🚀 Starting legislator ETL job...")
+    try:
+        conn = connect()
+        cur = conn.cursor()
+        data = extract_legislators()
+    except Exception as e:
+        logging.critical(f"Startup failure: {e}")
+        return
+
+    success = skipped = failed = 0
+
+    for raw in data:
+        leg = parse_legislator(raw)
+        if not leg:
+            skipped += 1
+            continue
+        try:
+            legislator_id = insert_legislator(cur, leg)
+            insert_service_history(cur, legislator_id, leg["terms"])
+            insert_committee_roles(cur, legislator_id, leg["terms"])
+            insert_leadership_roles(cur, legislator_id, leg["terms"])
+            conn.commit()
+            success += 1
+        except Exception as e:
+            logging.error(f"❌ DB error for {leg['bioguide_id']}: {e}")
+            conn.rollback()
+            failed += 1
+
+    cur.close()
+    conn.close()
+
+    summary = {
+        "inserted": success,
+        "failed": failed,
+        "skipped": skipped
+    }
+
+    logging.info(f"✅ ETL complete: {summary}")
+    print(json.dumps({
+        "message": "ETL script completed successfully",
+        "output": summary
+    }, indent=2))
+
+if __name__ == "__main__":
+    run()
