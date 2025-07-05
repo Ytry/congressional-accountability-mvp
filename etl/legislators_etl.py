@@ -2,6 +2,7 @@ import requests
 import psycopg2
 import json
 import os
+import urllib3
 
 DB_NAME = os.getenv("dbname")
 DB_USER = os.getenv("user")
@@ -11,7 +12,6 @@ DB_PORT = os.getenv("port")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-res = requests.get(DATA_SOURCE_URL, verify=False)
 
 DATA_SOURCE_URL = "https://theunitedstates.io/congress-legislators/legislators-current.json"
 
@@ -22,7 +22,7 @@ def connect():
     )
 
 def extract_legislators():
-    res = requests.get(DATA_SOURCE_URL)
+    res = requests.get(DATA_SOURCE_URL, verify=False)
     res.raise_for_status()
     return res.json()
 
