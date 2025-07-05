@@ -3,18 +3,28 @@ import psycopg2
 import json
 import os
 import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+# Environment variables
 DB_NAME = os.getenv("dbname")
 DB_USER = os.getenv("user")
 DB_PASSWORD = os.getenv("password")
 DB_HOST = os.getenv("host")
 DB_PORT = os.getenv("port")
 
+# Disable SSL warnings (Render doesn't have the cert chain for some domains)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
+# Data source
 DATA_SOURCE_URL = "https://theunitedstates.io/congress-legislators/legislators-current.json"
 
+# Create requests session with retries
+session = requests.Session()
+retry = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+adapter = HTTPAdapter(max_retries=retry)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
 
 def connect():
     return psycopg2.connect(
@@ -23,25 +33,30 @@ def connect():
     )
 
 def extract_legislators():
-    res = requests.get(DATA_SOURCE_URL, verify=False)
-    res.raise_for_status()
-    return res.json()
+    try:
+        response = session.get(DATA_SOURCE_URL, verify=False, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.SSLError as e:
+        raise RuntimeError(f"SSL Error: {e}")
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"HTTP Error: {e.response.status_code} – {e.response.reason}")
+    except Exception as e:
+        raise RuntimeError(f"Data extraction failed: {e}")
 
 def parse_legislator(raw):
     bioguide_id = raw["id"].get("bioguide", None)
-    full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}"
+    full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
     party = raw["terms"][-1].get("party", "")[0]
-    chamber = raw["terms"][-1].get("type", "").capitalize()  # 'house' → 'House'
+    chamber = raw["terms"][-1].get("type", "").capitalize()
     state = raw["terms"][-1].get("state", "")
     district = raw["terms"][-1].get("district", None) if chamber == "House" else None
     portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
     website = raw["terms"][-1].get("url", None)
-    
     contact = {
         "address": raw["terms"][-1].get("address", None),
         "phone": raw["terms"][-1].get("phone", None)
     }
-
     bio_snapshot = f"{raw['bio'].get('birthday', '')} – {raw['bio'].get('gender', '')}"
 
     return {
@@ -126,23 +141,23 @@ def insert_leadership_roles(cur, legislator_id, terms):
 def run():
     conn = connect()
     cur = conn.cursor()
-
-    legislators_raw = extract_legislators()
-    for raw in legislators_raw:
-        try:
-            leg = parse_legislator(raw)
-            legislator_id = insert_legislator(cur, leg)
-            insert_service_history(cur, legislator_id, leg["terms"])
-            insert_committee_roles(cur, legislator_id, leg["terms"])
-            insert_leadership_roles(cur, legislator_id, leg["terms"])
-        except Exception as e:
-            print(f"Error processing {raw['id'].get('bioguide')}: {e}")
-            conn.rollback()
-        else:
-            conn.commit()
-
-    cur.close()
-    conn.close()
+    try:
+        legislators_raw = extract_legislators()
+        for raw in legislators_raw:
+            try:
+                leg = parse_legislator(raw)
+                legislator_id = insert_legislator(cur, leg)
+                insert_service_history(cur, legislator_id, leg["terms"])
+                insert_committee_roles(cur, legislator_id, leg["terms"])
+                insert_leadership_roles(cur, legislator_id, leg["terms"])
+            except Exception as e:
+                print(f"[!] Error processing {raw['id'].get('bioguide')}: {e}")
+                conn.rollback()
+            else:
+                conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 if __name__ == "__main__":
     run()
