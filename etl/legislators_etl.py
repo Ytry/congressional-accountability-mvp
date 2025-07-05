@@ -1,7 +1,7 @@
 import requests
 import psycopg2
 import json
-import pyyaml
+import yaml
 import os
 
 # Environment variables (set these in Render or .env)
