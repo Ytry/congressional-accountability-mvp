@@ -1,30 +1,18 @@
 import requests
 import psycopg2
 import json
+import yaml
 import os
-import urllib3
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# Environment variables
+# Environment variables (set these in Render or .env)
 DB_NAME = os.getenv("dbname")
 DB_USER = os.getenv("user")
 DB_PASSWORD = os.getenv("password")
 DB_HOST = os.getenv("host")
 DB_PORT = os.getenv("port")
 
-# Disable SSL warnings (Render doesn't have the cert chain for some domains)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Data source
-DATA_SOURCE_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.json"
-
-# Create requests session with retries
-session = requests.Session()
-retry = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-adapter = HTTPAdapter(max_retries=retry)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
+# Working YAML data source
+DATA_SOURCE_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml"
 
 def connect():
     return psycopg2.connect(
@@ -33,30 +21,25 @@ def connect():
     )
 
 def extract_legislators():
-    try:
-        response = session.get(DATA_SOURCE_URL, verify=False, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.SSLError as e:
-        raise RuntimeError(f"SSL Error: {e}")
-    except requests.exceptions.HTTPError as e:
-        raise RuntimeError(f"HTTP Error: {e.response.status_code} – {e.response.reason}")
-    except Exception as e:
-        raise RuntimeError(f"Data extraction failed: {e}")
+    res = requests.get(DATA_SOURCE_URL)
+    res.raise_for_status()
+    return yaml.safe_load(res.text)
 
 def parse_legislator(raw):
-    bioguide_id = raw["id"].get("bioguide", None)
-    full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
+    bioguide_id = raw["id"].get("bioguide")
+    full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}"
     party = raw["terms"][-1].get("party", "")[0]
     chamber = raw["terms"][-1].get("type", "").capitalize()
     state = raw["terms"][-1].get("state", "")
-    district = raw["terms"][-1].get("district", None) if chamber == "House" else None
+    district = raw["terms"][-1].get("district") if chamber == "House" else None
     portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
-    website = raw["terms"][-1].get("url", None)
+    website = raw["terms"][-1].get("url")
+
     contact = {
-        "address": raw["terms"][-1].get("address", None),
-        "phone": raw["terms"][-1].get("phone", None)
+        "address": raw["terms"][-1].get("address"),
+        "phone": raw["terms"][-1].get("phone")
     }
+
     bio_snapshot = f"{raw['bio'].get('birthday', '')} – {raw['bio'].get('gender', '')}"
 
     return {
@@ -110,7 +93,7 @@ def insert_service_history(cur, legislator_id, terms):
 def insert_committee_roles(cur, legislator_id, terms):
     for term in terms:
         if "committees" in term:
-            congress = term.get("congress", None)
+            congress = term.get("congress")
             for committee in term["committees"]:
                 cur.execute("""
                     INSERT INTO committee_assignments (
@@ -123,7 +106,7 @@ def insert_committee_roles(cur, legislator_id, terms):
                     legislator_id,
                     congress,
                     committee.get("name"),
-                    committee.get("subcommittee", None),
+                    committee.get("subcommittee"),
                     committee.get("position", "Member")
                 ))
 
@@ -141,23 +124,23 @@ def insert_leadership_roles(cur, legislator_id, terms):
 def run():
     conn = connect()
     cur = conn.cursor()
-    try:
-        legislators_raw = extract_legislators()
-        for raw in legislators_raw:
-            try:
-                leg = parse_legislator(raw)
-                legislator_id = insert_legislator(cur, leg)
-                insert_service_history(cur, legislator_id, leg["terms"])
-                insert_committee_roles(cur, legislator_id, leg["terms"])
-                insert_leadership_roles(cur, legislator_id, leg["terms"])
-            except Exception as e:
-                print(f"[!] Error processing {raw['id'].get('bioguide')}: {e}")
-                conn.rollback()
-            else:
-                conn.commit()
-    finally:
-        cur.close()
-        conn.close()
+    legislators_raw = extract_legislators()
+
+    for raw in legislators_raw:
+        try:
+            leg = parse_legislator(raw)
+            legislator_id = insert_legislator(cur, leg)
+            insert_service_history(cur, legislator_id, leg["terms"])
+            insert_committee_roles(cur, legislator_id, leg["terms"])
+            insert_leadership_roles(cur, legislator_id, leg["terms"])
+        except Exception as e:
+            print(f"❌ Error processing {raw['id'].get('bioguide')}: {e}")
+            conn.rollback()
+        else:
+            conn.commit()
+
+    cur.close()
+    conn.close()
 
 if __name__ == "__main__":
     run()
