@@ -1,4 +1,3 @@
-
 import os
 import requests
 import psycopg2
@@ -29,8 +28,7 @@ DB_CONFIG = {
 HOUSE_BASE_URL = "https://clerk.house.gov/evs/{year}/roll{roll}.xml"
 SENATE_BASE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll}.csv"
 
-# --- ICPSR to BioGuide mapping (partial sample; extend this dictionary or load from file if needed) ---
-# Load ICPSR → BioGuide mapping from external JSON file
+# --- Load ICPSR to BioGuide mapping from external JSON file ---
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
 
@@ -103,8 +101,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         return []
 
     try:
-        lines = resp.content.decode("utf-8").splitlines()
-        reader = csv.DictReader(lines)
+        reader = csv.DictReader(resp.content.decode("utf-8").splitlines())
     except Exception as e:
         logging.error(f"❌ Failed to parse CSV from {url}: {e}")
         return []
@@ -117,6 +114,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
             logging.warning(f"⚠️ Skipping row with invalid or missing vote: {row}")
             continue
         tally[position] += 1
+
         try:
             parsed_date = datetime.strptime(row["Vote Date"], "%m/%d/%Y")
         except Exception:
@@ -128,9 +126,6 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr)
         if not bioguide_id:
             logging.warning(f"⚠️ No BioGuide match found for ICPSR ID '{icpsr}' (raw: '{row.get('ICPSR')}')")
-            continue
-        if not bioguide_id:
-            logging.warning(f"⚠️ No BioGuide match found for ICPSR ID {icpsr}")
             continue
 
         vote_data.append({
@@ -164,8 +159,7 @@ def insert_votes(vote_records: List[Dict]):
         try:
             cur.execute("SELECT id FROM legislators WHERE LOWER(bioguide_id) = LOWER(%s)", (v["bioguide_id"],))
             legislator = cur.fetchone()
-            logging.debug(f"Trying to match bioguide_id={v['bioguide_id']} to legislators table")
-        if not legislator:
+            if not legislator:
                 logging.warning(f"⏭️ No match for BioGuide ID {v['bioguide_id']}, skipping.")
                 skipped += 1
                 continue
@@ -199,7 +193,7 @@ def insert_votes(vote_records: List[Dict]):
 def run():
     logging.info("🚀 Starting Vote ETL process...")
     all_votes = []
-    rolls_to_fetch = [(118, 1, 1), (118, 1, 2)]
+    rolls_to_fetch = [(118, 1, 1), (118, 1, 2)]  # You can extend this
 
     for congress, session, roll in rolls_to_fetch:
         all_votes.extend(parse_house_vote(congress, session, roll))
