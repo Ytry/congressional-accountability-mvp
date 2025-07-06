@@ -55,7 +55,14 @@ def parse_legislator(raw) -> Optional[dict]:
 
         full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
         party = last_term.get("party", "")[0]
-        chamber = last_term.get("type", "").capitalize()
+
+        # ✅ Normalize chamber value
+        chamber_raw = last_term.get("type", "").lower()
+        chamber = "House" if chamber_raw == "rep" else "Senate" if chamber_raw == "sen" else None
+        if chamber is None:
+            logging.warning(f"⚠️ Unknown chamber type '{chamber_raw}' for {bioguide_id}. Skipping.")
+            return None
+
         state = last_term.get("state")
         district = last_term.get("district") if chamber == "House" else None
         portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
@@ -87,7 +94,7 @@ def parse_legislator(raw) -> Optional[dict]:
     except Exception as e:
         logging.error(f"❌ Unexpected error parsing legislator: {e}")
         return None
-
+        
 # --- Insert logic ---
 def insert_legislator(cur, leg):
     cur.execute("""
