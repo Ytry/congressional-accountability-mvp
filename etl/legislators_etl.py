@@ -29,7 +29,7 @@ def connect():
             port=DB_PORT
         )
     except Exception as e:
-        logging.critical(f"Database connection failed: {e}")
+        logging.critical(f"🚨 Database connection failed: {e}")
         raise
 
 # --- Extract YAML data ---
@@ -83,6 +83,9 @@ def parse_legislator(raw) -> Optional[dict]:
         }
     except KeyError as e:
         logging.warning(f"⚠️ Missing key while parsing legislator: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"❌ Unexpected error parsing legislator: {e}")
         return None
 
 # --- Insert logic ---
