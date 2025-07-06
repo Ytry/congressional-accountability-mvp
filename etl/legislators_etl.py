@@ -1,200 +1,125 @@
-import requests
-import psycopg2
-import json
-import yaml
 import os
+import requests
 import logging
-from typing import Optional
+from sqlalchemy import create_engine, Column, String, Integer
+from sqlalchemy.orm import declarative_base, sessionmaker
+from dotenv import load_dotenv
+import argparse
 
-# --- Logging setup ---
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+# Load environment variables
+load_dotenv()
 
-# --- Environment config ---
-DB_NAME = os.getenv("dbname")
-DB_USER = os.getenv("user")
-DB_PASSWORD = os.getenv("password")
-DB_HOST = os.getenv("host")
-DB_PORT = os.getenv("port")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/congress")
+LEGISLATORS_API = os.getenv("LEGISLATORS_API_URL", "https://theunitedstates.io/congress-legislators/legislators-current.json")
 
-DATA_SOURCE_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml"
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("etl_legislators.log"),
+        logging.StreamHandler()
+    ]
+)
 
-# --- Database Connection ---
-def connect():
+# SQLAlchemy setup
+Base = declarative_base()
+
+class Legislator(Base):
+    __tablename__ = "legislators"
+
+    bioguide_id = Column(String, primary_key=True)
+    full_name = Column(String)
+    party = Column(String)
+    state = Column(String)
+    chamber = Column(String)
+    district = Column(Integer, nullable=True)
+
+def fetch_legislator_data():
     try:
-        return psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT
+        logging.info("Fetching data from API...")
+        response = requests.get(LEGISLATORS_API)
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            logging.warning("Fetched zero records from API.")
+        logging.info(f"Fetched {len(data)} legislators.")
+        return data
+    except requests.RequestException as e:
+        logging.error(f"Error fetching data: {e}")
+        raise
+
+def transform_legislator_entry(entry):
+    try:
+        name = entry["name"]
+        bio = entry["id"]
+        terms = entry["terms"]
+        current_term = terms[-1]
+
+        full_name = f"{name.get('first', '')} {name.get('last', '')}".strip()
+        bioguide_id = bio.get("bioguide")
+        party = current_term.get("party")
+        state = current_term.get("state")
+        chamber = current_term.get("type")
+        district = current_term.get("district") if chamber == "rep" else None
+
+        if not bioguide_id:
+            raise ValueError("Missing BioGuide ID")
+
+        return Legislator(
+            bioguide_id=bioguide_id,
+            full_name=full_name,
+            party=party,
+            state=state,
+            chamber="House" if chamber == "rep" else "Senate",
+            district=district
         )
     except Exception as e:
-        logging.critical(f"🚨 Database connection failed: {e}")
-        raise
-
-# --- Extract YAML data ---
-def extract_legislators():
-    try:
-        logging.info(f"📥 Fetching data from {DATA_SOURCE_URL}")
-        response = requests.get(DATA_SOURCE_URL)
-        response.raise_for_status()
-        return yaml.safe_load(response.text)
-    except Exception as e:
-        logging.critical(f"❌ Failed to fetch or parse YAML: {e}")
-        raise
-
-# --- Parse a single legislator record ---
-def parse_legislator(raw) -> Optional[dict]:
-    try:
-        bioguide_id = raw["id"]["bioguide"]
-        last_term = raw["terms"][-1]
-
-        if not last_term.get("end"):
-            logging.debug(f"⏭️ Skipping {bioguide_id}: missing 'end' date.")
-            return None
-
-        full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
-        party = last_term.get("party", "")[0]
-        chamber = last_term.get("type", "").capitalize()
-        state = last_term.get("state")
-        district = last_term.get("district") if chamber == "House" else None
-        portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
-        website = last_term.get("url")
-
-        contact = {
-            "address": last_term.get("address"),
-            "phone": last_term.get("phone")
-        }
-
-        bio_snapshot = f"{raw['bio'].get('birthday', '')} – {raw['bio'].get('gender', '')}"
-
-        return {
-            "bioguide_id": bioguide_id,
-            "full_name": full_name,
-            "party": party,
-            "chamber": chamber,
-            "state": state,
-            "district": district,
-            "portrait_url": portrait_url,
-            "official_website_url": website,
-            "office_contact": contact,
-            "bio_snapshot": bio_snapshot,
-            "terms": raw["terms"]
-        }
-    except KeyError as e:
-        logging.warning(f"⚠️ Missing key while parsing legislator: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"❌ Unexpected error parsing legislator: {e}")
+        logging.error(f"Error transforming legislator entry: {e}")
         return None
 
-# --- Insert logic ---
-def insert_legislator(cur, leg):
-    cur.execute("""
-        INSERT INTO legislators (
-            bioguide_id, full_name, party, chamber, state, district,
-            portrait_url, official_website_url, office_contact, bio_snapshot
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        ON CONFLICT (bioguide_id) DO UPDATE SET
-            full_name = EXCLUDED.full_name,
-            party = EXCLUDED.party,
-            chamber = EXCLUDED.chamber,
-            state = EXCLUDED.state,
-            district = EXCLUDED.district,
-            portrait_url = EXCLUDED.portrait_url,
-            official_website_url = EXCLUDED.official_website_url,
-            office_contact = EXCLUDED.office_contact,
-            bio_snapshot = EXCLUDED.bio_snapshot
-        RETURNING id;
-    """, (
-        leg["bioguide_id"], leg["full_name"], leg["party"], leg["chamber"],
-        leg["state"], leg["district"], leg["portrait_url"], leg["official_website_url"],
-        json.dumps(leg["office_contact"]), leg["bio_snapshot"]
-    ))
-    return cur.fetchone()[0]
+def insert_legislators_to_db(data, dry_run=False):
+    engine = create_engine(DATABASE_URL)
+    Session = sessionmaker(bind=engine)
+    session = Session()
 
-def insert_service_history(cur, legislator_id, terms):
-    for term in terms:
-        try:
-            cur.execute("""
-                INSERT INTO service_history (legislator_id, term_start, term_end)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (legislator_id, term_start) DO NOTHING;
-            """, (legislator_id, term.get("start"), term.get("end")))
-        except Exception as e:
-            logging.warning(f"⚠️ Service history insert failed for {legislator_id}: {e}")
-
-def insert_committee_roles(cur, legislator_id, terms):
-    for term in terms:
-        for committee in term.get("committees", []):
-            try:
-                cur.execute("""
-                    INSERT INTO committee_assignments (
-                        legislator_id, congress, committee_name,
-                        subcommittee_name, role
-                    ) VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING;
-                """, (
-                    legislator_id,
-                    term.get("congress"),
-                    committee.get("name"),
-                    committee.get("subcommittee"),
-                    committee.get("position", "Member")
-                ))
-            except Exception as e:
-                logging.warning(f"⚠️ Committee insert failed for {legislator_id}: {e}")
-
-def insert_leadership_roles(cur, legislator_id, terms):
-    for term in terms:
-        role = term.get("leadership_title")
-        if role:
-            try:
-                cur.execute("""
-                    INSERT INTO leadership_roles (legislator_id, congress, role)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (legislator_id, congress, role) DO NOTHING;
-                """, (legislator_id, term.get("congress"), role))
-            except Exception as e:
-                logging.warning(f"⚠️ Leadership insert failed for {legislator_id}: {e}")
-
-# --- Main run block ---
-def run():
-    logging.info("🚀 Starting legislator ETL job...")
     try:
-        conn = connect()
-        cur = conn.cursor()
-        data = extract_legislators()
+        logging.info("Beginning insert process...")
+
+        for entry in data:
+            legislator = transform_legislator_entry(entry)
+            if legislator:
+                existing = session.query(Legislator).filter_by(bioguide_id=legislator.bioguide_id).first()
+                if existing:
+                    logging.debug(f"Skipping existing legislator {legislator.bioguide_id}")
+                    continue
+                session.add(legislator)
+        
+        if dry_run:
+            logging.info("Dry run mode enabled. Rolling back instead of committing.")
+            session.rollback()
+        else:
+            session.commit()
+            logging.info("Insert committed successfully.")
+
     except Exception as e:
-        logging.critical(f"❌ Startup failure: {e}")
-        return
+        logging.error(f"Database insert error: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
-    success = skipped = failed = 0
-
-    for raw in data:
-        leg = parse_legislator(raw)
-        if not leg:
-            skipped += 1
-            continue
-        try:
-            legislator_id = insert_legislator(cur, leg)
-            insert_service_history(cur, legislator_id, leg["terms"])
-            insert_committee_roles(cur, legislator_id, leg["terms"])
-            insert_leadership_roles(cur, legislator_id, leg["terms"])
-            conn.commit()
-            logging.info(f"✅ Processed: {leg['bioguide_id']} ({leg['full_name']})")
-            success += 1
-        except Exception as e:
-            logging.error(f"❌ Failed for {leg['bioguide_id']}: {e}")
-            conn.rollback()
-            failed += 1
-
-    cur.close()
-    conn.close()
-
-    logging.info("🏁 ETL Summary")
-    logging.info(f"✅ Inserted: {success}")
-    logging.info(f"⏭️ Skipped: {skipped}")
-    logging.info(f"❌ Failed: {failed}")
+def main(dry_run=False):
+    logging.info("Starting Legislators ETL process...")
+    try:
+        raw_data = fetch_legislator_data()
+        insert_legislators_to_db(raw_data, dry_run=dry_run)
+    except Exception as e:
+        logging.critical(f"ETL process failed: {e}")
+    logging.info("ETL process completed.")
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(description="Run the Legislators ETL script.")
+    parser.add_argument("--dry-run", action="store_true", help="Run ETL without committing to DB")
+    args = parser.parse_args()
+
+    main(dry_run=args.dry_run)
