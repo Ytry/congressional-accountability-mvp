@@ -1,3 +1,4 @@
+
 import os
 import requests
 import psycopg2
@@ -35,13 +36,17 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
     url = HOUSE_BASE_URL.format(year=year, roll=str(roll).zfill(3))
     logging.info(f"📥 Fetching House vote from {url}")
     resp = requests.get(url)
-    if resp.status_code != 200:
-        logging.warning(f"⚠️ Failed to fetch: {url}")
+    if resp.status_code != 200 or not resp.content.strip().startswith(b'<?xml'):
+        logging.warning(f"⚠️ Skipping invalid or non-XML content at {url}")
         return []
 
-    root = ET.fromstring(resp.content)
-    vote_data = []
+    try:
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        logging.error(f"❌ Failed to parse XML from {url}: {e}")
+        return []
 
+    vote_data = []
     try:
         bill_number = root.findtext(".//legis-num")
         vote_desc = root.findtext(".//vote-desc")
@@ -87,15 +92,15 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
     url = SENATE_BASE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
     logging.info(f"📥 Fetching Senate vote from {url}")
     resp = requests.get(url)
-    if resp.status_code != 200:
-        logging.warning(f"⚠️ Failed to fetch: {url}")
+    if resp.status_code != 200 or "<!DOCTYPE" in resp.text:
+        logging.warning(f"⚠️ Skipping invalid or HTML content at {url}")
         return []
 
     try:
         lines = resp.content.decode("utf-8").splitlines()
         reader = csv.DictReader(lines)
     except Exception as e:
-        logging.error(f"❌ Failed to parse CSV: {e}")
+        logging.error(f"❌ Failed to parse CSV from {url}: {e}")
         return []
 
     vote_data = []
@@ -108,8 +113,8 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         tally[position] += 1
         try:
             parsed_date = datetime.strptime(row["Vote Date"], "%m/%d/%Y")
-        except Exception as e:
-            logging.warning(f"⚠️ Skipping invalid date: {row['Vote Date']}")
+        except Exception:
+            logging.warning(f"⚠️ Skipping invalid date: {row.get('Vote Date', '')}")
             continue
 
         vote_data.append({
@@ -118,11 +123,11 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
             "congress": congress,
             "session": session,
             "roll": roll,
-            "bioguide_id": row["ICPSR"],
-            "bill_number": row["Measure Number"],
-            "question": row["Vote Question"],
-            "vote_description": row["Vote Title"],
-            "vote_result": row["Result"],
+            "bioguide_id": row.get("ICPSR", ""),
+            "bill_number": row.get("Measure Number"),
+            "question": row.get("Vote Question"),
+            "vote_description": row.get("Vote Title"),
+            "vote_result": row.get("Result"),
             "position": position,
             "date": parsed_date,
             "tally_yea": tally["Yea"],
@@ -177,8 +182,8 @@ def insert_votes(vote_records: List[Dict]):
 def run():
     logging.info("🚀 Starting Vote ETL process...")
     all_votes = []
-
     rolls_to_fetch = [(118, 1, 1), (118, 1, 2)]
+
     for congress, session, roll in rolls_to_fetch:
         all_votes.extend(parse_house_vote(congress, session, roll))
         all_votes.extend(parse_senate_vote(congress, session, roll))
