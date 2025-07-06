@@ -4,6 +4,7 @@ import requests
 import psycopg2
 import xml.etree.ElementTree as ET
 import csv
+import json
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
@@ -27,6 +28,14 @@ DB_CONFIG = {
 # --- URL Templates ---
 HOUSE_BASE_URL = "https://clerk.house.gov/evs/{year}/roll{roll}.xml"
 SENATE_BASE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll}.csv"
+
+# --- ICPSR to BioGuide mapping (partial sample; extend this dictionary or load from file if needed) ---
+ICPSR_TO_BIOGUIDE = {
+    "14307": "B000575",  # Example entry: ICPSR 14307 -> Biden
+    "40904": "S001194",  # Example entry: Schumer
+    "49300": "W000437",  # Example entry: Warren
+    # Add more mappings here or load dynamically
+}
 
 def db_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -117,13 +126,19 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
             logging.warning(f"⚠️ Skipping invalid date: {row.get('Vote Date', '')}")
             continue
 
+        icpsr = row.get("ICPSR", "")
+        bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr, None)
+        if not bioguide_id:
+            logging.warning(f"⚠️ No BioGuide match found for ICPSR ID {icpsr}")
+            continue
+
         vote_data.append({
             "vote_id": f"senate-{congress}-{session}-{roll}",
             "chamber": "Senate",
             "congress": congress,
             "session": session,
             "roll": roll,
-            "bioguide_id": row.get("ICPSR", ""),
+            "bioguide_id": bioguide_id,
             "bill_number": row.get("Measure Number"),
             "question": row.get("Vote Question"),
             "vote_description": row.get("Vote Title"),
