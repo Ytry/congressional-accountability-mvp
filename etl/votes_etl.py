@@ -31,7 +31,7 @@ def db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
 def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
-    year = 2023  # 🔧 TODO: Dynamically derive year from Congress/session if needed
+    year = 2023
     url = HOUSE_BASE_URL.format(year=year, roll=str(roll).zfill(3))
     logging.info(f"📥 Fetching House vote from {url}")
     resp = requests.get(url)
@@ -48,7 +48,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         vote_result = root.findtext(".//vote-result")
         date = root.findtext(".//action-date")
         question = root.findtext(".//question-text")
-        parsed_date = datetime.strptime(date, "%Y-%m-%d")
+        parsed_date = datetime.strptime(date, "%d-%b-%Y")
     except Exception as e:
         logging.error(f"❌ Failed to parse vote metadata: {e}")
         return []
@@ -78,7 +78,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
             "tally_nay": tally["Nay"],
             "tally_present": tally["Present"],
             "tally_not_voting": tally["Not Voting"],
-            "is_key_vote": False  # 🔧 Add logic later
+            "is_key_vote": False
         })
 
     return vote_data
@@ -101,13 +101,15 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
     vote_data = []
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
     for row in reader:
-        position = row["Vote"]
-        if position not in tally:
+        position = row.get("Vote") or row.get("Vote Cast")
+        if not position or position not in tally:
+            logging.warning(f"⚠️ Skipping row with invalid or missing vote: {row}")
             continue
         tally[position] += 1
         try:
             parsed_date = datetime.strptime(row["Vote Date"], "%m/%d/%Y")
-        except Exception:
+        except Exception as e:
+            logging.warning(f"⚠️ Skipping invalid date: {row['Vote Date']}")
             continue
 
         vote_data.append({
@@ -176,7 +178,6 @@ def run():
     logging.info("🚀 Starting Vote ETL process...")
     all_votes = []
 
-    # You can loop these dynamically
     rolls_to_fetch = [(118, 1, 1), (118, 1, 2)]
     for congress, session, roll in rolls_to_fetch:
         all_votes.extend(parse_house_vote(congress, session, roll))
