@@ -123,8 +123,12 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
             logging.warning(f"⚠️ Skipping invalid date: {row.get('Vote Date', '')}")
             continue
 
-        icpsr = row.get("ICPSR", "")
-        bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr, None)
+        icpsr_raw = row.get("ICPSR", "").strip()
+        icpsr = str(int(icpsr_raw)) if icpsr_raw.isdigit() else icpsr_raw
+        bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr)
+        if not bioguide_id:
+            logging.warning(f"⚠️ No BioGuide match found for ICPSR ID '{icpsr}' (raw: '{row.get('ICPSR')}')")
+            continue
         if not bioguide_id:
             logging.warning(f"⚠️ No BioGuide match found for ICPSR ID {icpsr}")
             continue
@@ -158,9 +162,10 @@ def insert_votes(vote_records: List[Dict]):
 
     for v in vote_records:
         try:
-            cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (v["bioguide_id"],))
+            cur.execute("SELECT id FROM legislators WHERE LOWER(bioguide_id) = LOWER(%s)", (v["bioguide_id"],))
             legislator = cur.fetchone()
-            if not legislator:
+            logging.debug(f"Trying to match bioguide_id={v['bioguide_id']} to legislators table")
+        if not legislator:
                 logging.warning(f"⏭️ No match for BioGuide ID {v['bioguide_id']}, skipping.")
                 skipped += 1
                 continue
