@@ -1,4 +1,4 @@
-# votes_etl.py — Enhanced with fallback logging and unmatched ID collection
+# votes_etl.py — Deduplication enabled
 
 import os
 import requests
@@ -58,19 +58,17 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         return []
 
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
+    vote_id = f"house-{congress}-{session}-{roll}"
 
     for record in root.findall(".//recorded-vote"):
         legislator_elem = record.find("legislator")
         bioguide_id = (legislator_elem.attrib.get("bioGuideId") or legislator_elem.attrib.get("name-id", "")).strip().upper()
         position = record.findtext("vote")
-        if not bioguide_id:
-            logging.warning("⚠️ No BioGuide ID found in House vote record.")
-            continue
-        if position not in tally:
+        if not bioguide_id or position not in tally:
             continue
         tally[position] += 1
         vote_data.append({
-            "vote_id": f"house-{congress}-{session}-{roll}",
+            "vote_id": vote_id,
             "chamber": "House",
             "congress": congress,
             "session": session,
@@ -103,6 +101,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
     vote_data = []
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
     unmatched_icpsr = []
+    vote_id = f"senate-{congress}-{session}-{roll}"
 
     for row in reader:
         position = row.get("Vote") or row.get("Vote Cast")
@@ -117,18 +116,16 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         try:
             icpsr = str(int(icpsr_raw))
         except Exception as e:
-            logging.warning(f"❌ Invalid ICPSR '{icpsr_raw}': {e}")
             unmatched_icpsr.append({"icpsr": icpsr_raw, "error": str(e), "row": row})
             continue
 
         bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr)
         if not bioguide_id:
-            logging.warning(f"⚠️ No BioGuide match for ICPSR {icpsr}")
             unmatched_icpsr.append({"icpsr": icpsr, "row": row})
             continue
 
         vote_data.append({
-            "vote_id": f"senate-{congress}-{session}-{roll}",
+            "vote_id": vote_id,
             "chamber": "Senate",
             "congress": congress,
             "session": session,
@@ -147,35 +144,39 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
             "is_key_vote": False
         })
 
-    if unmatched_icpsr:
-        with open("unmatched_icpsr_ids.json", "w") as f:
-            json.dump(unmatched_icpsr, f, indent=2)
-        logging.info(f"📄 Wrote unmatched ICPSR records to unmatched_icpsr_ids.json")
-
     return vote_data
+
+def vote_exists(cur, vote_id: str, legislator_id: int) -> bool:
+    cur.execute("SELECT 1 FROM votes WHERE vote_id = %s AND legislator_id = %s", (vote_id, legislator_id))
+    return cur.fetchone() is not None
 
 def insert_votes(votes: List[Dict]):
     conn = db_connection()
     cur = conn.cursor()
     inserted, skipped = 0, 0
+
     for v in votes:
         try:
             bioguide_id = v["bioguide_id"].strip().upper()
             cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (bioguide_id,))
-            legislator = cur.fetchone()
-            if not legislator:
-                logging.warning(f"⏭️ No DB match for BioGuide {bioguide_id} from vote {v['vote_id']}")
+            result = cur.fetchone()
+            if not result:
+                logging.warning(f"⏭️ No match for BioGuide ID {bioguide_id}")
+                skipped += 1
+                continue
+            legislator_id = result[0]
+
+            if vote_exists(cur, v["vote_id"], legislator_id):
+                logging.info(f"⚠️ Duplicate vote_id {v['vote_id']} for legislator {legislator_id} — Skipping")
                 skipped += 1
                 continue
 
-            legislator_id = legislator[0]
             cur.execute("""
                 INSERT INTO votes (
                     legislator_id, vote_id, bill_number, question_text,
                     vote_description, vote_result, position, date,
                     tally_yea, tally_nay, tally_present, tally_not_voting, is_key_vote
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING;
             """, (
                 legislator_id, v["vote_id"], v["bill_number"], v["question"],
                 v["vote_description"], v["vote_result"], v["position"], v["date"],
@@ -184,8 +185,9 @@ def insert_votes(votes: List[Dict]):
             ))
             inserted += 1
         except Exception as e:
-            logging.error(f"❌ Failed to insert vote {v['vote_id']}: {e}")
+            logging.error(f"❌ Insert failed for vote {v['vote_id']}: {e}")
             conn.rollback()
+
     conn.commit()
     cur.close()
     conn.close()
