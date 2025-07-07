@@ -1,4 +1,4 @@
-# votes_etl.py — Corrected Version
+# votes_etl.py — Fully Corrected Version
 
 import os
 import requests
@@ -60,13 +60,22 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
 
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
     for record in root.findall(".//recorded-vote"):
+        bioguide_id = None
+
         legislator_elem = record.find("legislator")
-        if legislator_elem is None:
-            continue
-        bioguide_id = legislator_elem.attrib.get("bioGuideId", "").strip().upper()
+        if legislator_elem is not None:
+            bioguide_id = legislator_elem.attrib.get("bioGuideId")
+
         if not bioguide_id:
+            name_id_elem = record.find("name-id")
+            if name_id_elem is not None:
+                bioguide_id = name_id_elem.text
+
+        if not bioguide_id or not bioguide_id.strip():
             logging.warning("⚠️ No BioGuide ID found in House vote record, skipping.")
             continue
+        bioguide_id = bioguide_id.strip().upper()
+
         position = record.findtext("vote")
         if position not in tally:
             continue
@@ -158,7 +167,6 @@ def insert_votes(votes: List[Dict]):
 
     for v in votes:
         try:
-            
             normalized_id = v["bioguide_id"].strip().upper()
             logging.debug(f"🔍 Looking up legislator with BioGuide ID: {normalized_id}")
             cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (normalized_id,))
