@@ -20,17 +20,13 @@ CURRENT_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislato
 HISTORICAL_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-historical.yaml"
 
 def connect():
-    try:
-        return psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT
-        )
-    except Exception as e:
-        logging.critical(f"🚨 Database connection failed: {e}")
-        raise
+    return psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT
+    )
 
 def fetch_yaml_data(url: str) -> List[dict]:
     logging.info(f"📥 Downloading YAML from: {url}")
@@ -42,81 +38,91 @@ def parse_legislator(raw) -> Optional[dict]:
     try:
         ids = raw.get("id", {})
         bioguide_id = ids.get("bioguide")
-        icpsr = ids.get("icpsr")
-
+        icpsr_id = str(ids.get("icpsr")) if ids.get("icpsr") else None
         if not bioguide_id:
-            logging.warning("⚠️ Missing bioguide_id. Skipping.")
             return None
 
+        name = raw.get("name", {})
+        first = name.get("first", "")
+        last = name.get("last", "")
+        full_name = f"{first} {last}".strip()
+
+        bio = raw.get("bio", {})
+        birthday = bio.get("birthday")
+        gender = bio.get("gender")
+
         terms = raw.get("terms", [])
-        if not terms or not isinstance(terms, list):
-            logging.warning(f"⚠️ Missing or malformed 'terms' for {bioguide_id}")
+        if not terms:
             return None
 
         last_term = terms[-1]
-
-        first = raw.get("name", {}).get("first", "")
-        last = raw.get("name", {}).get("last", "")
-        full_name = f"{first} {last}".strip()
-
-        party_list = last_term.get("party", [])
-        party = party_list[0] if isinstance(party_list, list) and party_list else last_term.get("party", "")
-
+        party = last_term.get("party")
         chamber_type = last_term.get("type", "").lower()
         chamber = "House" if chamber_type == "rep" else "Senate" if chamber_type == "sen" else None
         if not chamber:
-            logging.warning(f"⚠️ Unknown chamber type '{chamber_type}' for {bioguide_id}. Skipping.")
             return None
 
         state = last_term.get("state")
         district = last_term.get("district") if chamber == "House" else None
         portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
-        website = last_term.get("url")
+        official_website_url = last_term.get("url")
+
         contact = {
             "address": last_term.get("address"),
             "phone": last_term.get("phone")
         }
-        bio_snapshot = f"{raw.get('bio', {}).get('birthday', '')} – {raw.get('bio', {}).get('gender', '')}"
+
+        bio_snapshot = f"{birthday or ''} – {gender or ''}"
 
         return {
             "bioguide_id": bioguide_id,
-            "icpsr": str(icpsr) if icpsr else None,
+            "icpsr_id": icpsr_id,
+            "first_name": first,
+            "last_name": last,
             "full_name": full_name,
+            "gender": gender,
+            "birthday": birthday,
             "party": party,
-            "chamber": chamber,
             "state": state,
             "district": district,
+            "chamber": chamber,
             "portrait_url": portrait_url,
-            "official_website_url": website,
+            "official_website_url": official_website_url,
             "office_contact": contact,
             "bio_snapshot": bio_snapshot,
             "terms": terms
         }
     except Exception as e:
-        logging.error(f"❌ Failed to parse legislator {raw.get('id', {}).get('bioguide', 'UNKNOWN')}: {e}")
+        logging.error(f"❌ Failed to parse legislator: {e}")
         return None
 
 def insert_legislator(cur, leg):
     cur.execute("""
         INSERT INTO legislators (
-            bioguide_id, icpsr, full_name, party, chamber, state, district,
+            bioguide_id, icpsr_id, first_name, last_name, full_name,
+            gender, birthday, party, state, district, chamber,
             portrait_url, official_website_url, office_contact, bio_snapshot
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
         ON CONFLICT (bioguide_id) DO UPDATE SET
-            icpsr = EXCLUDED.icpsr,
+            icpsr_id = EXCLUDED.icpsr_id,
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
             full_name = EXCLUDED.full_name,
+            gender = EXCLUDED.gender,
+            birthday = EXCLUDED.birthday,
             party = EXCLUDED.party,
-            chamber = EXCLUDED.chamber,
             state = EXCLUDED.state,
             district = EXCLUDED.district,
+            chamber = EXCLUDED.chamber,
             portrait_url = EXCLUDED.portrait_url,
             official_website_url = EXCLUDED.official_website_url,
             office_contact = EXCLUDED.office_contact,
             bio_snapshot = EXCLUDED.bio_snapshot
         RETURNING id;
     """, (
-        leg["bioguide_id"], leg["icpsr"], leg["full_name"], leg["party"],
-        leg["chamber"], leg["state"], leg["district"], leg["portrait_url"],
+        leg["bioguide_id"], leg["icpsr_id"], leg["first_name"], leg["last_name"],
+        leg["full_name"], leg["gender"], leg["birthday"], leg["party"], leg["state"],
+        leg["district"], leg["chamber"], leg["portrait_url"],
         leg["official_website_url"], json.dumps(leg["office_contact"]),
         leg["bio_snapshot"]
     ))
@@ -124,47 +130,52 @@ def insert_legislator(cur, leg):
 
 def insert_service_history(cur, legislator_id, terms):
     for term in terms:
-        try:
-            cur.execute("""
-                INSERT INTO service_history (legislator_id, term_start, term_end)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (legislator_id, term_start) DO NOTHING;
-            """, (legislator_id, term.get("start"), term.get("end")))
-        except Exception as e:
-            logging.warning(f"⚠️ Service history insert failed: {e}")
+        cur.execute("""
+            INSERT INTO service_history (
+                legislator_id, start_date, end_date, chamber, state, district, party
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (legislator_id, start_date) DO NOTHING;
+        """, (
+            legislator_id,
+            term.get("start"),
+            term.get("end"),
+            "House" if term.get("type") == "rep" else "Senate",
+            term.get("state"),
+            term.get("district") if term.get("type") == "rep" else None,
+            term.get("party")
+        ))
 
 def insert_committee_roles(cur, legislator_id, terms):
     for term in terms:
         for committee in term.get("committees", []):
-            try:
-                cur.execute("""
-                    INSERT INTO committee_assignments (
-                        legislator_id, congress, committee_name,
-                        subcommittee_name, role
-                    ) VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING;
-                """, (
-                    legislator_id,
-                    term.get("congress"),
-                    committee.get("name"),
-                    committee.get("subcommittee"),
-                    committee.get("position", "Member")
-                ))
-            except Exception as e:
-                logging.warning(f"⚠️ Committee insert failed: {e}")
+            cur.execute("""
+                INSERT INTO committee_assignments (
+                    legislator_id, congress, committee_name,
+                    subcommittee_name, role
+                ) VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING;
+            """, (
+                legislator_id,
+                term.get("congress"),
+                committee.get("name"),
+                committee.get("subcommittee"),
+                committee.get("position", "Member")
+            ))
 
 def insert_leadership_roles(cur, legislator_id, terms):
     for term in terms:
         role = term.get("leadership_title")
         if role:
-            try:
-                cur.execute("""
-                    INSERT INTO leadership_roles (legislator_id, congress, role)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (legislator_id, congress, role) DO NOTHING;
-                """, (legislator_id, term.get("congress"), role))
-            except Exception as e:
-                logging.warning(f"⚠️ Leadership insert failed: {e}")
+            cur.execute("""
+                INSERT INTO leadership_roles (
+                    legislator_id, congress, role
+                ) VALUES (%s, %s, %s)
+                ON CONFLICT (legislator_id, congress, role) DO NOTHING;
+            """, (
+                legislator_id,
+                term.get("congress"),
+                role
+            ))
 
 def run():
     logging.info("🚀 Starting legislator ETL job...")
