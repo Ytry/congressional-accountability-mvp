@@ -15,7 +15,7 @@ from typing import List, Dict
 load_dotenv()
 
 # Logging setup
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
 
 # DB Config
 DB_CONFIG = {
@@ -46,11 +46,12 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         return []
 
     root = ET.fromstring(resp.content)
+
     first_vote = root.find(".//recorded-vote")
     if first_vote is not None:
         logging.debug(f"🧪 First recorded-vote block:\n{ET.tostring(first_vote, encoding='unicode')}")
 
-vote_data = []
+    vote_data = []
 
     try:
         bill_number = root.findtext(".//legis-num")
@@ -63,9 +64,9 @@ vote_data = []
         return []
 
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
+
     for record in root.findall(".//recorded-vote"):
         bioguide_id = None
-
         legislator_elem = record.find("legislator")
         if legislator_elem is not None:
             bioguide_id = legislator_elem.attrib.get("bioGuideId")
@@ -114,11 +115,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         logging.warning(f"⚠️ Invalid or HTML content at {url}")
         return []
 
-        first_vote = root.find(".//recorded-vote")
-    if first_vote is not None:
-        logging.debug(f"🧪 First recorded-vote block:\n{ET.tostring(first_vote, encoding='unicode')}")
-
-vote_data = []
+    vote_data = []
     lines = resp.content.decode("utf-8").splitlines()
     reader = csv.DictReader(lines)
 
