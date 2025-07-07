@@ -71,10 +71,8 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         if legislator_elem is not None:
             bioguide_id = legislator_elem.attrib.get("bioGuideId")
 
-        if not bioguide_id:
-            name_id_elem = record.find("name-id")
-            if name_id_elem is not None:
-                bioguide_id = name_id_elem.text
+        if not bioguide_id and legislator_elem is not None:
+            bioguide_id = legislator_elem.attrib.get("name-id")
 
         if not bioguide_id or not bioguide_id.strip():
             logging.warning("⚠️ No BioGuide ID found in House vote record, skipping.")
