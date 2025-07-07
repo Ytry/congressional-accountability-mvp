@@ -46,7 +46,11 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         return []
 
     root = ET.fromstring(resp.content)
-    vote_data = []
+        first_vote = root.find(".//recorded-vote")
+    if first_vote is not None:
+        logging.debug(f"🧪 First recorded-vote block:\n{ET.tostring(first_vote, encoding='unicode')}")
+
+vote_data = []
 
     try:
         bill_number = root.findtext(".//legis-num")
@@ -110,7 +114,11 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         logging.warning(f"⚠️ Invalid or HTML content at {url}")
         return []
 
-    vote_data = []
+        first_vote = root.find(".//recorded-vote")
+    if first_vote is not None:
+        logging.debug(f"🧪 First recorded-vote block:\n{ET.tostring(first_vote, encoding='unicode')}")
+
+vote_data = []
     lines = resp.content.decode("utf-8").splitlines()
     reader = csv.DictReader(lines)
 
