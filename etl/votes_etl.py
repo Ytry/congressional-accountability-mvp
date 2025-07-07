@@ -111,7 +111,13 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         except Exception:
             continue
 
-        icpsr = str(int(row.get("ICPSR", "0").strip()))
+        icpsr_raw = row.get("ICPSR", "")
+        logging.debug(f"Raw ICPSR from row: '{icpsr_raw}'")
+        try:
+            icpsr = str(int(icpsr_raw.strip()))
+        except Exception as e:
+            logging.warning(f"Failed to normalize ICPSR: {icpsr_raw} ({e}), skipping.")
+            continue
         bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr)
         logging.debug(f"🔁 ICPSR {icpsr} maps to BioGuide ID {bioguide_id}")
         if not bioguide_id:
@@ -152,7 +158,7 @@ def insert_votes(votes: List[Dict]):
             cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (normalized_id,))
             legislator = cur.fetchone()
             if not legislator:
-                logging.warning(f"⏭️ No match for BioGuide ID {v['bioguide_id']}, skipping.")
+                logging.warning(f"⏭️ No match for BioGuide ID {v['bioguide_id']} from vote {v['vote_id']} on {v['date']}, skipping.")
                 skipped += 1
                 continue
 
