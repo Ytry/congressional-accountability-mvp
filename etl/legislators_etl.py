@@ -19,7 +19,6 @@ DB_PORT = os.getenv("port")
 CURRENT_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml"
 HISTORICAL_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-historical.yaml"
 
-# --- Database Connection ---
 def connect():
     try:
         return psycopg2.connect(
@@ -33,40 +32,40 @@ def connect():
         logging.critical(f"🚨 Database connection failed: {e}")
         raise
 
-# --- Extract YAML data ---
 def fetch_yaml_data(url: str) -> List[dict]:
     logging.info(f"📥 Downloading YAML from: {url}")
     response = requests.get(url)
     response.raise_for_status()
     return yaml.safe_load(response.text)
 
-# --- Parse a single legislator record ---
 def parse_legislator(raw) -> Optional[dict]:
     try:
         ids = raw.get("id", {})
         bioguide_id = ids.get("bioguide")
-        icpsr = ids.get("icpsr")  # optional but included
+        icpsr = ids.get("icpsr")
 
         if not bioguide_id:
-            logging.warning(f"⚠️ Missing bioguide_id. Skipping.")
+            logging.warning("⚠️ Missing bioguide_id. Skipping.")
             return None
 
-        if not raw.get("terms"):
-            logging.warning(f"⚠️ Missing 'terms' for {bioguide_id}")
+        terms = raw.get("terms", [])
+        if not terms or not isinstance(terms, list):
+            logging.warning(f"⚠️ Missing or malformed 'terms' for {bioguide_id}")
             return None
 
-        last_term = raw["terms"][-1]
+        last_term = terms[-1]
 
-        first = raw['name'].get('first', '')
-        last = raw['name'].get('last', '')
+        first = raw.get("name", {}).get("first", "")
+        last = raw.get("name", {}).get("last", "")
         full_name = f"{first} {last}".strip()
 
-        party = last_term.get("party", "")[0]
+        party_list = last_term.get("party", [])
+        party = party_list[0] if isinstance(party_list, list) and party_list else last_term.get("party", "")
 
-        chamber_raw = last_term.get("type", "").lower()
-        chamber = "House" if chamber_raw == "rep" else "Senate" if chamber_raw == "sen" else None
-        if chamber is None:
-            logging.warning(f"⚠️ Unknown chamber type '{chamber_raw}' for {bioguide_id}. Skipping.")
+        chamber_type = last_term.get("type", "").lower()
+        chamber = "House" if chamber_type == "rep" else "Senate" if chamber_type == "sen" else None
+        if not chamber:
+            logging.warning(f"⚠️ Unknown chamber type '{chamber_type}' for {bioguide_id}. Skipping.")
             return None
 
         state = last_term.get("state")
@@ -77,7 +76,7 @@ def parse_legislator(raw) -> Optional[dict]:
             "address": last_term.get("address"),
             "phone": last_term.get("phone")
         }
-        bio_snapshot = f"{raw['bio'].get('birthday', '')} – {raw['bio'].get('gender', '')}"
+        bio_snapshot = f"{raw.get('bio', {}).get('birthday', '')} – {raw.get('bio', {}).get('gender', '')}"
 
         return {
             "bioguide_id": bioguide_id,
@@ -91,13 +90,12 @@ def parse_legislator(raw) -> Optional[dict]:
             "official_website_url": website,
             "office_contact": contact,
             "bio_snapshot": bio_snapshot,
-            "terms": raw["terms"]
+            "terms": terms
         }
     except Exception as e:
-        logging.error(f"❌ Failed to parse legislator: {e}")
+        logging.error(f"❌ Failed to parse legislator {raw.get('id', {}).get('bioguide', 'UNKNOWN')}: {e}")
         return None
 
-# --- Insert logic ---
 def insert_legislator(cur, leg):
     cur.execute("""
         INSERT INTO legislators (
@@ -168,7 +166,6 @@ def insert_leadership_roles(cur, legislator_id, terms):
             except Exception as e:
                 logging.warning(f"⚠️ Leadership insert failed: {e}")
 
-# --- Main run block ---
 def run():
     logging.info("🚀 Starting legislator ETL job...")
     try:
