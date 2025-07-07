@@ -1,21 +1,21 @@
-# votes_etl.py — Debug & Senate Support Included
+# votes_etl.py — Final Debug Version with Senate Fixes
 
 import os, requests, psycopg2, xml.etree.ElementTree as ET, csv, json, logging
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Dict
 
-# Load environment
+# Load env vars
 load_dotenv()
 
-# Logging setup
+# Logging
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()]
 )
 
-# DB credentials
+# Database credentials
 DB_CONFIG = {
     "dbname": os.getenv("dbname"),
     "user": os.getenv("user"),
@@ -24,7 +24,7 @@ DB_CONFIG = {
     "port": os.getenv("port"),
 }
 
-# Static mappings
+# Static map
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
 
@@ -32,7 +32,7 @@ with open("icpsr_to_bioguide_full.json", "r") as f:
 HOUSE_URL = "https://clerk.house.gov/evs/2023/roll{roll}.xml"
 SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll}.csv"
 
-# Helpers
+# Connect
 def db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
@@ -46,6 +46,7 @@ def parse_house_vote(congress, session, roll) -> Dict or None:
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
+            logging.debug(f"House vote not found or not valid XML: {url}")
             return None
         root = ET.fromstring(resp.content)
         return {
@@ -67,20 +68,24 @@ def parse_senate_vote(congress, session, roll) -> Dict or None:
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
     try:
         resp = requests.get(url, timeout=10)
-        if resp.status_code != 200 or "<!DOCTYPE" in resp.text:
+        if resp.status_code != 200 or "roll-call-vote-not-available" in resp.text:
+            logging.debug(f"Senate vote not found or invalid HTML: {url}")
             return None
-        reader = list(csv.DictReader(resp.content.decode().splitlines()))
+        lines = resp.content.decode("utf-8").splitlines()
+        reader = list(csv.DictReader(lines))
         if not reader or "Vote Date" not in reader[0]:
+            logging.debug(f"Senate CSV missing expected headers: {url}")
             return None
+        row = reader[0]
         return {
             "vote_id": f"senate-{congress}-{session}-{roll}",
             "congress": congress,
             "chamber": "senate",
-            "date": datetime.strptime(reader[0]["Vote Date"], "%m/%d/%Y"),
-            "question": reader[0].get("Vote Question"),
-            "description": reader[0].get("Vote Title"),
-            "result": reader[0].get("Result"),
-            "bill_id": reader[0].get("Measure Number")
+            "date": datetime.strptime(row["Vote Date"], "%m/%d/%Y"),
+            "question": row.get("Vote Question"),
+            "description": row.get("Vote Title"),
+            "result": row.get("Result"),
+            "bill_id": row.get("Measure Number")
         }
     except Exception as e:
         logging.warning(f"⚠️ Failed Senate roll {roll}: {e}")
@@ -90,9 +95,11 @@ def insert_vote(vote: Dict) -> bool:
     conn = db_connection()
     cur = conn.cursor()
     try:
+        logging.debug(f"🔍 Checking if vote_id {vote['vote_id']} already exists...")
         if vote_exists(cur, vote["vote_id"]):
-            logging.debug(f"↪️ Skipping duplicate vote: {vote['vote_id']}")
+            logging.warning(f"⚠️ Skipping duplicate vote: {vote['vote_id']}")
             return False
+        logging.debug(f"📥 Inserting vote: {vote}")
         cur.execute("""
             INSERT INTO votes (
                 vote_id, congress, chamber, date, question,
@@ -118,29 +125,30 @@ def run():
     logging.info("🚀 ETL Start for House + Senate Votes")
     congress, session = 118, 1
     max_rolls = 2000
-    max_consec_misses = 20
-    consec_misses = 0
-    inserted_total = 0
+    max_misses = 20
+    misses = 0
+    inserted = 0
 
     for roll in range(1, max_rolls):
-        if consec_misses >= max_consec_misses:
+        if misses >= max_misses:
             logging.warning("🛑 Too many misses, ending early.")
             break
 
+        logging.debug(f"🍡 Checking roll: {roll}")
         vote = parse_house_vote(congress, session, roll)
         if not vote:
-            logging.debug(f"House roll {roll} not found — trying Senate...")
+            logging.info(f"❌House vote {roll} not found. Trying Senate...")
             vote = parse_senate_vote(congress, session, roll)
 
         if vote:
             if insert_vote(vote):
-                inserted_total += 1
-            consec_misses = 0
+                inserted += 1
+            misses = 0
         else:
-            logging.debug(f"Roll {roll} missing from both chambers.")
-            consec_misses += 1
+            logging.debug(f"🧊 Roll {roll} missing from both chambers.")
+            misses += 1
 
-    logging.info(f"🏁 ETL Done: Inserted {inserted_total} votes.")
+    logging.info(f"🎉 ETL Complete. Total votes inserted: {inserted}")
 
 if __name__ == "__main__":
     run()
