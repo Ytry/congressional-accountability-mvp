@@ -60,7 +60,13 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
 
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
     for record in root.findall(".//recorded-vote"):
-        bioguide_id = record.findtext("legislator")
+        legislator_elem = record.find("legislator")
+        if legislator_elem is None:
+            continue
+        bioguide_id = legislator_elem.attrib.get("bioGuideId", "").strip().upper()
+        if not bioguide_id:
+            logging.warning("⚠️ No BioGuide ID found in House vote record, skipping.")
+            continue
         position = record.findtext("vote")
         if position not in tally:
             continue
