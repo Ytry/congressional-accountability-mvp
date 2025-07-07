@@ -46,7 +46,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         return []
 
     root = ET.fromstring(resp.content)
-        first_vote = root.find(".//recorded-vote")
+    first_vote = root.find(".//recorded-vote")
     if first_vote is not None:
         logging.debug(f"🧪 First recorded-vote block:\n{ET.tostring(first_vote, encoding='unicode')}")
 
