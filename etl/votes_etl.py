@@ -1,4 +1,4 @@
-# votes_etl.py — Final Phase 2 Version
+# votes_etl.py — Dual Chamber ETL (House first, Senate fallback)
 
 import os, requests, psycopg2, xml.etree.ElementTree as ET, csv, json, logging
 from datetime import datetime
@@ -47,7 +47,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Dict:
     logging.info(f"📥 Fetching House vote from {url}")
     resp = requests.get(url)
     if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
-        logging.warning(f"⚠️ Invalid or missing XML at {url}")
+        logging.warning(f"⚠️ Invalid or missing House XML at {url}")
         return None
 
     root = ET.fromstring(resp.content)
@@ -72,7 +72,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Dict:
     try:
         resp = requests.get(url)
         if resp.status_code != 200 or "<!DOCTYPE" in resp.text:
-            logging.warning(f"⚠️ Invalid or HTML content at {url}")
+            logging.warning(f"⚠️ Invalid or HTML Senate content at {url}")
             return None
         rows = list(csv.DictReader(resp.content.decode().splitlines()))
         if not rows:
@@ -127,28 +127,23 @@ def run():
     consecutive_misses = 0
     inserted_count = 0
 
-    for roll in range(1, 2000):  # Go deep
+    for roll in range(1, 2000):
         if consecutive_misses >= max_misses:
             logging.info("🛑 Too many consecutive misses. Ending.")
             break
 
-        house_url = HOUSE_URL.format(roll=str(roll).zfill(3))
-        senate_url = SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
-
-        has_data = False
         vote_data = None
-
-        if is_valid_url(house_url, "xml"):
+        if is_valid_url(HOUSE_URL.format(roll=str(roll).zfill(3)), "xml"):
             vote_data = parse_house_vote(congress, session, roll)
-        elif is_valid_url(senate_url, "csv"):
+        elif is_valid_url(SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5)), "csv"):
             vote_data = parse_senate_vote(congress, session, roll)
 
         if vote_data:
             if insert_vote(vote_data):
                 inserted_count += 1
-            has_data = True
-
-        consecutive_misses = 0 if has_data else consecutive_misses + 1
+            consecutive_misses = 0
+        else:
+            consecutive_misses += 1
 
     logging.info(f"🎯 ETL Complete. Votes Inserted: {inserted_count}")
 
