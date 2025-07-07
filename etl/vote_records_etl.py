@@ -1,141 +1,151 @@
+# vote_records_etl.py — Robust with fallback
+
 import os
-import logging
 import requests
-import xml.etree.ElementTree as ET
 import psycopg2
-from psycopg2.extras import execute_batch
+import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
+from datetime import datetime
+import logging
 
-# Load environment variables
 load_dotenv()
-DB_URL = os.getenv("DATABASE_URL")
-
-# Setup logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-VOTE_MAP = {
-    "Yea": "Yea",
-    "Nay": "Nay",
-    "Present": "Present",
-    "Not Voting": "Not Voting",
-    "Absent": "Absent",
-    "Unknown": "Unknown"
+DB_CONFIG = {
+    "dbname": os.getenv("dbname"),
+    "user": os.getenv("user"),
+    "password": os.getenv("password"),
+    "host": os.getenv("host"),
+    "port": os.getenv("port"),
 }
 
-def get_vote_session_map(cursor):
-    cursor.execute("SELECT vote_id, id FROM vote_sessions;")
-    result = cursor.fetchall()
-    logging.info(f"📥 Loaded {len(result)} vote sessions from DB.")
-    return {vote_id: id_ for vote_id, id_ in result}
+HOUSE_URL = "https://clerk.house.gov/evs/{year}/roll{roll:03}.xml"
 
-def get_legislator_map(cursor):
-    cursor.execute("SELECT bioguide_id, id FROM legislators;")
-    result = cursor.fetchall()
-    logging.info(f"👥 Loaded {len(result)} legislators from DB.")
-    return {bio.upper(): id_ for bio, id_ in result}
+def db_connection():
+    return psycopg2.connect(**DB_CONFIG)
 
-def is_valid_roll(congress, roll):
-    url = f"https://clerk.house.gov/evs/{congress}/roll{str(roll).zfill(3)}.xml"
+def load_vote_sessions():
+    conn = db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT roll, session, congress, id FROM vote_sessions")
+    sessions = {(r, s, c): id for r, s, c, id in cur.fetchall()}
+    conn.close()
+    logging.info(f"📥 Loaded {len(sessions)} vote sessions from DB.")
+    return sessions
+
+def load_legislators():
+    conn = db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT bioguide_id, id FROM legislators")
+    legislator_map = {bid.strip().upper(): id for bid, id in cur.fetchall()}
+    conn.close()
+    logging.info(f"🧑‍🤝‍🧑Loaded {len(legislator_map)} legislators from DB.")
+    return legislator_map
+
+def fetch_roll(congress, session, roll):
+    url = HOUSE_URL.format(year=2023, roll=roll)
     try:
-        response = requests.head(url, timeout=5)
-        return response.status_code == 200
-    except Exception:
-        return False
-
-def discover_valid_rolls(congress, max_roll=999):
-    logging.info("🔍 Discovering valid roll calls from Clerk API...")
-    valid_rolls = []
-    for roll in range(1, max_roll + 1):
-        if is_valid_roll(congress, roll):
-            valid_rolls.append(roll)
-        elif roll > 50 and len(valid_rolls) == 0:
-            logging.warning("❌ No valid roll files found in the first 50 attempts. Check your congress/session values.")
-            break
-    logging.info(f"📦 Discovered {len(valid_rolls)} valid roll XMLs.")
-    return valid_rolls
-
-def parse_vote_records(congress, session, roll, session_map, legislator_map):
-    vote_id = f"house-{congress}-{session}-{roll}"
-    url = f"https://clerk.house.gov/evs/{congress}/roll{str(roll).zfill(3)}.xml"
-    logging.info(f"📄 Processing vote XML: {url}")
-
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
+        resp = requests.get(url)
+        if resp.status_code == 200:
+            return ET.fromstring(resp.content)
+        else:
+            logging.error(f"❌Failed to fetch XML from {url}: {resp.status_code}")
     except Exception as e:
-        logging.error(f"❌ Failed to fetch or parse XML from {url}: {e}")
-        return []
+        logging.error(f"❌Request error for roll {roll}: {e}")
+    return None
 
-    vote_session_id = session_map.get(vote_id)
-    if not vote_session_id:
-        logging.warning(f"⚠️ Vote session ID not found for {vote_id}. Skipping.")
-        return []
-
+def parse_votes(root, congress, session, roll, legislator_map, vote_sessions):
     records = []
-    skipped_missing_bio = 0
-    skipped_unknown_legislator = 0
+    vote_id = f"house-{congress}-{session}-{roll}"
+    try:
+        bill = root.findtext(".//legis-num")
+        question = root.findtext(".//question-text")
+        description = root.findtext(".//vote-desc")
+        result = root.findtext(".//vote-result")
+        date = datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y")
+    except Exception as e:
+        logging.warning(f"⚠️Failed to parse metadata for roll {roll}: {e}")
+        return records
 
-    for record in root.findall(".//recorded-vote"):
-        legislator = record.find("legislator")
-        if legislator is None:
-            skipped_missing_bio += 1
+    # Look up session ID
+    session_key = (roll, session, congress)
+    session_id = vote_sessions.get(session_key)
+    if not session_id:
+        logging.warning(f"⚠️Skipping vote {vote_id} (not found in vote_sessions)")
+        return records
+
+    tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
+    for vote in root.findall(".//recorded-vote"):
+        bioguide = vote.find("legislator").attrib.get("bioGuideId", "").upper().strip()
+        position = vote.findtext("vote")
+        if not bioguide or bioguide not in legislator_map or position not in tally:
             continue
-
-        bioguide_id = legislator.attrib.get("bioGuideId") or legislator.attrib.get("name-id")
-        if not bioguide_id:
-            skipped_missing_bio += 1
-            continue
-
-        bioguide_id = bioguide_id.strip().upper()
-        vote_cast = record.findtext("vote", default="Unknown").strip()
-        normalized_vote = VOTE_MAP.get(vote_cast, "Unknown")
-
-        legislator_id = legislator_map.get(bioguide_id)
-        if not legislator_id:
-            skipped_unknown_legislator += 1
-            continue
-
-        records.append((vote_session_id, legislator_id, normalized_vote))
-
-    logging.info(
-        f"🧾 Roll {roll}: Total={len(root.findall('.//recorded-vote'))} | Insert={len(records)} | "
-        f"MissingBio={skipped_missing_bio} | UnknownLegislator={skipped_unknown_legislator}"
-    )
+        tally[position] += 1
+        records.append({
+            "vote_id": vote_id,
+            "legislator_id": legislator_map[bioguide],
+            "vote_session_id": session_id,
+            "bill": bill,
+            "question": question,
+            "description": description,
+            "result": result,
+            "position": position,
+            "date": date,
+            "tally_yea": tally["Yea"],
+            "tally_nay": tally["Nay"],
+            "tally_present": tally["Present"],
+            "tally_not_voting": tally["Not Voting"],
+        })
     return records
 
-def main():
-    logging.info("🏁 Starting Vote Records ETL with dynamic roll discovery...")
-    try:
-        conn = psycopg2.connect(DB_URL)
-        cursor = conn.cursor()
+def insert_votes(records):
+    conn = db_connection()
+    cur = conn.cursor()
+    inserted = skipped = 0
 
-        session_map = get_vote_session_map(cursor)
-        legislator_map = get_legislator_map(cursor)
+    for r in records:
+        cur.execute("SELECT 1 FROM votes WHERE vote_id = %s AND legislator_id = %s", (r["vote_id"], r["legislator_id"]))
+        if cur.fetchone():
+            skipped += 1
+            continue
+        try:
+            cur.execute("""
+                INSERT INTO votes (
+                    legislator_id, vote_id, vote_session_id,
+                    bill_number, question_text, vote_description, vote_result,
+                    position, date, tally_yea, tally_nay, tally_present, tally_not_voting, is_key_vote
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
+            """, (
+                r["legislator_id"], r["vote_id"], r["vote_session_id"],
+                r["bill"], r["question"], r["description"], r["result"],
+                r["position"], r["date"], r["tally_yea"], r["tally_nay"],
+                r["tally_present"], r["tally_not_voting"]
+            ))
+            inserted += 1
+        except Exception as e:
+            logging.error(f"❌Failed to insert vote {r['vote_id']}: {e}")
+            conn.rollback()
+    conn.commit()
+    cur.close()
+    conn.close()
+    logging.info(f"✅ Inserted: {inserted} | ⏭️ Skipped: {skipped}")
 
-        congress = 118
-        session = 1
-        valid_rolls = discover_valid_rolls(congress)
+def run_etl():
+    logging.info("🛠️ Starting Vote Records ETL...")
+    vote_sessions = load_vote_sessions()
+    legislator_map = load_legislators()
+    all_records = []
 
-        total_inserted = 0
-        for roll in valid_rolls:
-            records = parse_vote_records(congress, session, roll, session_map, legislator_map)
-            if records:
-                execute_batch(cursor, """
-                    INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT DO NOTHING;
-                """, records)
-                conn.commit()
-                total_inserted += len(records)
+    for roll in range(1, 51):  # Check first 50 rolls
+        root = fetch_roll(118, 1, roll)
+        if root is None:
+            continue
+        records = parse_votes(root, 118, 1, roll, legislator_map, vote_sessions)
+        if records:
+            all_records.extend(records)
 
-        logging.info(f"✅ ETL complete. Inserted: {total_inserted} vote records from {len(valid_rolls)} rolls.")
-    except Exception as e:
-        logging.error(f"❌ Fatal error in ETL: {e}")
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-        logging.info("🔚 Database connection closed.")
+    insert_votes(all_records)
+    logging.info("🧹ETL complete. Database connection closed.")
 
 if __name__ == "__main__":
-    main()
+    run_etl()
