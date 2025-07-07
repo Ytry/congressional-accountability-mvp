@@ -1,12 +1,13 @@
-# votes_etl_dual.py
+# votes_etl_debug.py
 
 import os, requests, psycopg2, xml.etree.ElementTree as ET, csv, json, logging
 from datetime import datetime
 from dotenv import load_dotenv
-from typing import List, Dict
+from typing import Dict
 
+# Setup
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 DB_CONFIG = {
     "dbname": os.getenv("dbname"),
@@ -29,12 +30,13 @@ def vote_exists(cur, vote_id) -> bool:
     cur.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
     return cur.fetchone() is not None
 
-def parse_house_vote(congress, session, roll):
+def parse_house_vote(congress, session, roll) -> Dict or None:
     url = HOUSE_URL.format(roll=str(roll).zfill(3))
-    logging.info(f"📥 Fetching House vote from {url}")
+    logging.info(f"🏛️ Trying House vote {roll}: {url}")
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, timeout=10)
         if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
+            logging.debug(f"House vote not found or not XML: {url}")
             return None
         root = ET.fromstring(resp.content)
         return {
@@ -48,15 +50,16 @@ def parse_house_vote(congress, session, roll):
             "bill_id": root.findtext(".//legis-num")
         }
     except Exception as e:
-        logging.error(f"❌ Failed parsing House roll {roll}: {e}")
+        logging.error(f"House parse failed for roll {roll}: {e}")
         return None
 
-def parse_senate_vote(congress, session, roll):
+def parse_senate_vote(congress, session, roll) -> Dict or None:
     url = SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
-    logging.info(f"📥 Fetching Senate vote from {url}")
+    logging.info(f"🏛️ Trying Senate vote {roll}: {url}")
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, timeout=10)
         if resp.status_code != 200 or "<!DOCTYPE" in resp.text:
+            logging.debug(f"Senate vote not found or invalid: {url}")
             return None
         rows = list(csv.DictReader(resp.content.decode().splitlines()))
         if not rows:
@@ -72,18 +75,16 @@ def parse_senate_vote(congress, session, roll):
             "bill_id": rows[0].get("Measure Number")
         }
     except Exception as e:
-        logging.error(f"❌ Failed parsing Senate roll {roll}: {e}")
+        logging.error(f"Senate parse failed for roll {roll}: {e}")
         return None
 
 def insert_vote(vote: Dict):
     conn = db_connection()
     cur = conn.cursor()
-    if vote_exists(cur, vote["vote_id"]):
-        logging.info(f"⚠️ Skipping duplicate vote: {vote['vote_id']}")
-        cur.close()
-        conn.close()
-        return False
     try:
+        if vote_exists(cur, vote["vote_id"]):
+            logging.warning(f"⚠️ Duplicate vote skipped: {vote['vote_id']}")
+            return False
         cur.execute("""
             INSERT INTO votes (
                 vote_id, congress, chamber, date, question,
@@ -94,40 +95,44 @@ def insert_vote(vote: Dict):
             vote["question"], vote["description"], vote["result"], vote["bill_id"]
         ))
         conn.commit()
-        logging.info(f"✅ Inserted vote: {vote['vote_id']}")
+        logging.info(f"✅ Vote inserted: {vote['vote_id']}")
         return True
     except Exception as e:
-        logging.error(f"❌ Insert failed for {vote['vote_id']}: {e}")
         conn.rollback()
+        logging.error(f"❌ Insert error for {vote['vote_id']}: {e}")
         return False
     finally:
         cur.close()
         conn.close()
 
 def run():
-    logging.info("🚀 Starting Vote ETL")
+    logging.info("🚀 Vote ETL starting")
     congress, session = 118, 1
+    max_rolls = 2000
     max_misses = 20
 
-    for chamber, parser, max_roll, fmt in [
-        ("house", parse_house_vote, 2000, "house-{roll:03}"),
-        ("senate", parse_senate_vote, 1000, "senate-{roll:05}")
-    ]:
-        logging.info(f"📊 Starting {chamber.title()} votes loop")
-        consecutive_misses = 0
-        inserted = 0
-        for roll in range(1, max_roll):
-            if consecutive_misses >= max_misses:
-                logging.info(f"🛑 Too many consecutive {chamber} misses. Ending.")
-                break
-            vote_data = parser(congress, session, roll)
-            if vote_data:
-                if insert_vote(vote_data):
-                    inserted += 1
-                consecutive_misses = 0
-            else:
-                consecutive_misses += 1
-        logging.info(f"✅ {chamber.title()} votes inserted: {inserted}")
+    inserted_total = 0
+    consecutive_misses = 0
+
+    for roll in range(1, max_rolls):
+        if consecutive_misses >= max_misses:
+            logging.info(f"🛑 Ending after {max_misses} consecutive misses")
+            break
+
+        # House first
+        vote = parse_house_vote(congress, session, roll)
+        if not vote:
+            logging.info(f"House vote {roll} missing, trying Senate...")
+            vote = parse_senate_vote(congress, session, roll)
+
+        if vote:
+            if insert_vote(vote):
+                inserted_total += 1
+            consecutive_misses = 0
+        else:
+            consecutive_misses += 1
+
+    logging.info(f"🎉 Total votes inserted: {inserted_total}")
 
 if __name__ == "__main__":
     run()
