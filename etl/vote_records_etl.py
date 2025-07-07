@@ -26,16 +26,20 @@ VOTE_MAP = {
 
 def get_vote_session_map(cursor):
     cursor.execute("SELECT vote_id, id FROM vote_sessions;")
-    return {vote_id: id_ for vote_id, id_ in cursor.fetchall()}
+    result = cursor.fetchall()
+    logging.info(f"Loaded {len(result)} vote sessions from DB.")
+    return {vote_id: id_ for vote_id, id_ in result}
 
 def get_legislator_map(cursor):
     cursor.execute("SELECT bioguide_id, id FROM legislators;")
-    return {bio.upper(): id_ for bio, id_ in cursor.fetchall()}
+    result = cursor.fetchall()
+    logging.info(f"Loaded {len(result)} legislators from DB.")
+    return {bio.upper(): id_ for bio, id_ in result}
 
 def parse_vote_records(congress, session, roll, session_map, legislator_map):
     vote_id = f"house-{congress}-{session}-{roll}"
-    url = f"https://clerk.house.gov/evs/2023/roll{str(roll).zfill(3)}.xml"
-    logging.info(f"📄 Processing: {url}")
+    url = f"https://clerk.house.gov/evs/{congress}/roll{str(roll).zfill(3)}.xml"
+    logging.info(f"📄 Processing vote XML: {url}")
 
     try:
         response = requests.get(url)
@@ -48,7 +52,7 @@ def parse_vote_records(congress, session, roll, session_map, legislator_map):
         root = ET.fromstring(response.content)
         vote_session_id = session_map.get(vote_id)
         if not vote_session_id:
-            logging.warning(f"⚠️ Skipping vote {vote_id} (not found in vote_sessions)")
+            logging.warning(f"⚠️ Skipping vote {vote_id} — not found in vote_sessions table.")
             return []
 
         records = []
@@ -58,55 +62,62 @@ def parse_vote_records(congress, session, roll, session_map, legislator_map):
                 continue
             bioguide_id = legislator.attrib.get("bioGuideId") or legislator.attrib.get("name-id")
             if not bioguide_id:
-                logging.warning("⚠️ Missing bioguide_id in recorded vote")
+                logging.warning("⚠️ Skipping record with missing bioguide_id")
                 continue
+
             bioguide_id = bioguide_id.strip().upper()
             vote_cast = record.findtext("vote", default="Unknown").strip()
             normalized_vote = VOTE_MAP.get(vote_cast, "Unknown")
 
             legislator_id = legislator_map.get(bioguide_id)
             if not legislator_id:
-                logging.warning(f"⚠️ Legislator ID '{bioguide_id}' not found in database.")
+                logging.warning(f"⚠️ Legislator ID '{bioguide_id}' not found in DB — skipping.")
                 continue
 
             records.append((vote_session_id, legislator_id, normalized_vote))
         return records
     except Exception as e:
-        logging.error(f"❌ Error parsing XML from {url}: {e}")
+        logging.error(f"❌ Failed to parse XML from {url}: {e}")
         return []
 
 def main():
-    logging.info("📥 Starting Vote Records ETL")
+    logging.info("📥 Starting Vote Records ETL...")
 
-    conn = psycopg2.connect(DB_URL)
-    cursor = conn.cursor()
-    session_map = get_vote_session_map(cursor)
-    legislator_map = get_legislator_map(cursor)
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cursor = conn.cursor()
 
-    congress = 118
-    session = 1
-    roll_calls = [1, 2]  # Can be expanded
+        session_map = get_vote_session_map(cursor)
+        legislator_map = get_legislator_map(cursor)
 
-    batch_data = []
-    for roll in roll_calls:
-        records = parse_vote_records(congress, session, roll, session_map, legislator_map)
-        batch_data.extend(records)
+        congress = 118
+        session = 1
+        roll_calls = list(range(1, 11))  # Expand as needed
 
-    if batch_data:
-        logging.info(f"✅ Inserting {len(batch_data)} vote records...")
-        execute_batch(cursor, """
-            INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
-            VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING;
-        """, batch_data)
-        conn.commit()
-        logging.info("✅ Insert complete.")
-    else:
-        logging.warning("⚠️ No valid vote records to insert.")
+        total_inserted = 0
+        for roll in roll_calls:
+            records = parse_vote_records(congress, session, roll, session_map, legislator_map)
+            if records:
+                logging.info(f"✅ Inserting {len(records)} vote records for roll {roll}")
+                execute_batch(cursor, """
+                    INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING;
+                """, records)
+                total_inserted += len(records)
+                conn.commit()
+            else:
+                logging.warning(f"⚠️ No records to insert for roll {roll}")
 
-    cursor.close()
-    conn.close()
-    logging.info("🏁 Vote Records ETL completed.")
+        logging.info(f"🎉 Finished inserting vote records. Total inserted: {total_inserted}")
+    except Exception as e:
+        logging.error(f"❌ ETL process failed: {e}")
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+        logging.info("🏁 ETL connection closed.")
 
 if __name__ == "__main__":
     main()
