@@ -113,6 +113,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
 
         icpsr = str(int(row.get("ICPSR", "0").strip()))
         bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr)
+        logging.debug(f"🔁 ICPSR {icpsr} maps to BioGuide ID {bioguide_id}")
         if not bioguide_id:
             logging.warning(f"⚠️ No match for ICPSR {icpsr}, skipping.")
             continue
@@ -145,7 +146,10 @@ def insert_votes(votes: List[Dict]):
 
     for v in votes:
         try:
-            cur.execute("SELECT id FROM legislators WHERE LOWER(bioguide_id) = LOWER(%s)", (v["bioguide_id"],))
+            
+            normalized_id = v["bioguide_id"].strip().upper()
+            logging.debug(f"🔍 Looking up legislator with BioGuide ID: {normalized_id}")
+            cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (normalized_id,))
             legislator = cur.fetchone()
             if not legislator:
                 logging.warning(f"⏭️ No match for BioGuide ID {v['bioguide_id']}, skipping.")
