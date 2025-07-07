@@ -1,4 +1,4 @@
-# votes_etl.py — Fully Corrected Version
+# votes_etl.py — Enhanced with fallback logging and unmatched ID collection
 
 import os
 import requests
@@ -11,7 +11,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from typing import List, Dict
 
-# Load environment variables
+# Load env vars
 load_dotenv()
 
 # Logging setup
@@ -26,7 +26,7 @@ DB_CONFIG = {
     "port": os.getenv("port"),
 }
 
-# Load ICPSR to BioGuide map
+# Load mapping
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
 
@@ -46,13 +46,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
         return []
 
     root = ET.fromstring(resp.content)
-
-    first_vote = root.find(".//recorded-vote")
-    if first_vote is not None:
-        logging.debug(f"🧪 First recorded-vote block:\n{ET.tostring(first_vote, encoding='unicode')}")
-
     vote_data = []
-
     try:
         bill_number = root.findtext(".//legis-num")
         vote_desc = root.findtext(".//vote-desc")
@@ -66,24 +60,15 @@ def parse_house_vote(congress: int, session: int, roll: int) -> List[Dict]:
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
 
     for record in root.findall(".//recorded-vote"):
-        bioguide_id = None
         legislator_elem = record.find("legislator")
-        if legislator_elem is not None:
-            bioguide_id = legislator_elem.attrib.get("bioGuideId")
-
-        if not bioguide_id and legislator_elem is not None:
-            bioguide_id = legislator_elem.attrib.get("name-id")
-
-        if not bioguide_id or not bioguide_id.strip():
-            logging.warning("⚠️ No BioGuide ID found in House vote record, skipping.")
-            continue
-        bioguide_id = bioguide_id.strip().upper()
-
+        bioguide_id = (legislator_elem.attrib.get("bioGuideId") or legislator_elem.attrib.get("name-id", "")).strip().upper()
         position = record.findtext("vote")
+        if not bioguide_id:
+            logging.warning("⚠️ No BioGuide ID found in House vote record.")
+            continue
         if position not in tally:
             continue
         tally[position] += 1
-
         vote_data.append({
             "vote_id": f"house-{congress}-{session}-{roll}",
             "chamber": "House",
@@ -113,33 +98,33 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
         logging.warning(f"⚠️ Invalid or HTML content at {url}")
         return []
 
-    vote_data = []
     lines = resp.content.decode("utf-8").splitlines()
     reader = csv.DictReader(lines)
-
+    vote_data = []
     tally = {"Yea": 0, "Nay": 0, "Present": 0, "Not Voting": 0}
+    unmatched_icpsr = []
+
     for row in reader:
         position = row.get("Vote") or row.get("Vote Cast")
         if not position or position not in tally:
             continue
         tally[position] += 1
-
         try:
             date = datetime.strptime(row["Vote Date"], "%m/%d/%Y")
         except Exception:
             continue
-
-        icpsr_raw = row.get("ICPSR", "")
-        logging.debug(f"Raw ICPSR from row: '{icpsr_raw}'")
+        icpsr_raw = row.get("ICPSR", "").strip()
         try:
-            icpsr = str(int(icpsr_raw.strip()))
+            icpsr = str(int(icpsr_raw))
         except Exception as e:
-            logging.warning(f"Failed to normalize ICPSR: {icpsr_raw} ({e}), skipping.")
+            logging.warning(f"❌ Invalid ICPSR '{icpsr_raw}': {e}")
+            unmatched_icpsr.append({"icpsr": icpsr_raw, "error": str(e), "row": row})
             continue
+
         bioguide_id = ICPSR_TO_BIOGUIDE.get(icpsr)
-        logging.debug(f"🔁 ICPSR {icpsr} maps to BioGuide ID {bioguide_id}")
         if not bioguide_id:
-            logging.warning(f"⚠️ No match for ICPSR {icpsr}, skipping.")
+            logging.warning(f"⚠️ No BioGuide match for ICPSR {icpsr}")
+            unmatched_icpsr.append({"icpsr": icpsr, "row": row})
             continue
 
         vote_data.append({
@@ -161,21 +146,25 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> List[Dict]:
             "tally_not_voting": tally["Not Voting"],
             "is_key_vote": False
         })
+
+    if unmatched_icpsr:
+        with open("unmatched_icpsr_ids.json", "w") as f:
+            json.dump(unmatched_icpsr, f, indent=2)
+        logging.info(f"📄 Wrote unmatched ICPSR records to unmatched_icpsr_ids.json")
+
     return vote_data
 
 def insert_votes(votes: List[Dict]):
     conn = db_connection()
     cur = conn.cursor()
     inserted, skipped = 0, 0
-
     for v in votes:
         try:
-            normalized_id = v["bioguide_id"].strip().upper()
-            logging.debug(f"🔍 Looking up legislator with BioGuide ID: {normalized_id}")
-            cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (normalized_id,))
+            bioguide_id = v["bioguide_id"].strip().upper()
+            cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (bioguide_id,))
             legislator = cur.fetchone()
             if not legislator:
-                logging.warning(f"⏭️ No match for BioGuide ID {v['bioguide_id']} from vote {v['vote_id']} on {v['date']}, skipping.")
+                logging.warning(f"⏭️ No DB match for BioGuide {bioguide_id} from vote {v['vote_id']}")
                 skipped += 1
                 continue
 
@@ -197,14 +186,10 @@ def insert_votes(votes: List[Dict]):
         except Exception as e:
             logging.error(f"❌ Failed to insert vote {v['vote_id']}: {e}")
             conn.rollback()
-
     conn.commit()
     cur.close()
     conn.close()
-    logging.info("📊 Vote ETL Summary")
-    logging.info(f"✅ Inserted: {inserted}")
-    logging.info(f"⏭️ Skipped: {skipped}")
-    logging.info("🏁 Vote ETL process complete.")
+    logging.info(f"✅ Inserted: {inserted} | ⏭️ Skipped: {skipped}")
 
 def run():
     logging.info("🚀 Starting Vote ETL process...")
