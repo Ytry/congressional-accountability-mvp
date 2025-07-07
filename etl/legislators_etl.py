@@ -45,15 +45,22 @@ def parse_legislator(raw) -> Optional[dict]:
     try:
         ids = raw.get("id", {})
         bioguide_id = ids.get("bioguide")
-        icpsr = ids.get("icpsr")  # new addition
+        icpsr = ids.get("icpsr")  # optional but included
 
         if not bioguide_id:
             logging.warning(f"⚠️ Missing bioguide_id. Skipping.")
             return None
 
+        if not raw.get("terms"):
+            logging.warning(f"⚠️ Missing 'terms' for {bioguide_id}")
+            return None
+
         last_term = raw["terms"][-1]
 
-        full_name = f"{raw['name'].get('first', '')} {raw['name'].get('last', '')}".strip()
+        first = raw['name'].get('first', '')
+        last = raw['name'].get('last', '')
+        full_name = f"{first} {last}".strip()
+
         party = last_term.get("party", "")[0]
 
         chamber_raw = last_term.get("type", "").lower()
