@@ -1,4 +1,4 @@
-# votes_etl.py — Dual Chamber ETL (House first, Senate fallback)
+# votes_etl_dual.py
 
 import os, requests, psycopg2, xml.etree.ElementTree as ET, csv, json, logging
 from datetime import datetime
@@ -25,33 +25,18 @@ SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congre
 def db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
-def is_valid_url(url: str, expected_type: str) -> bool:
-    try:
-        resp = requests.get(url, timeout=5)
-        if resp.status_code != 200:
-            return False
-        if expected_type == "xml" and not resp.content.strip().startswith(b"<?xml"):
-            return False
-        if expected_type == "csv" and "<!DOCTYPE" in resp.text:
-            return False
-        return True
-    except Exception:
-        return False
-
 def vote_exists(cur, vote_id) -> bool:
     cur.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
     return cur.fetchone() is not None
 
-def parse_house_vote(congress: int, session: int, roll: int) -> Dict:
+def parse_house_vote(congress, session, roll):
     url = HOUSE_URL.format(roll=str(roll).zfill(3))
     logging.info(f"📥 Fetching House vote from {url}")
-    resp = requests.get(url)
-    if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
-        logging.warning(f"⚠️ Invalid or missing House XML at {url}")
-        return None
-
-    root = ET.fromstring(resp.content)
     try:
+        resp = requests.get(url)
+        if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
+            return None
+        root = ET.fromstring(resp.content)
         return {
             "vote_id": f"house-{congress}-{session}-{roll}",
             "congress": congress,
@@ -66,13 +51,12 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Dict:
         logging.error(f"❌ Failed parsing House roll {roll}: {e}")
         return None
 
-def parse_senate_vote(congress: int, session: int, roll: int) -> Dict:
+def parse_senate_vote(congress, session, roll):
     url = SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
     logging.info(f"📥 Fetching Senate vote from {url}")
     try:
         resp = requests.get(url)
         if resp.status_code != 200 or "<!DOCTYPE" in resp.text:
-            logging.warning(f"⚠️ Invalid or HTML Senate content at {url}")
             return None
         rows = list(csv.DictReader(resp.content.decode().splitlines()))
         if not rows:
@@ -124,28 +108,26 @@ def run():
     logging.info("🚀 Starting Vote ETL")
     congress, session = 118, 1
     max_misses = 20
-    consecutive_misses = 0
-    inserted_count = 0
 
-    for roll in range(1, 2000):
-        if consecutive_misses >= max_misses:
-            logging.info("🛑 Too many consecutive misses. Ending.")
-            break
-
-        vote_data = None
-        if is_valid_url(HOUSE_URL.format(roll=str(roll).zfill(3)), "xml"):
-            vote_data = parse_house_vote(congress, session, roll)
-        elif is_valid_url(SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5)), "csv"):
-            vote_data = parse_senate_vote(congress, session, roll)
-
-        if vote_data:
-            if insert_vote(vote_data):
-                inserted_count += 1
-            consecutive_misses = 0
-        else:
-            consecutive_misses += 1
-
-    logging.info(f"🎯 ETL Complete. Votes Inserted: {inserted_count}")
+    for chamber, parser, max_roll, fmt in [
+        ("house", parse_house_vote, 2000, "house-{roll:03}"),
+        ("senate", parse_senate_vote, 1000, "senate-{roll:05}")
+    ]:
+        logging.info(f"📊 Starting {chamber.title()} votes loop")
+        consecutive_misses = 0
+        inserted = 0
+        for roll in range(1, max_roll):
+            if consecutive_misses >= max_misses:
+                logging.info(f"🛑 Too many consecutive {chamber} misses. Ending.")
+                break
+            vote_data = parser(congress, session, roll)
+            if vote_data:
+                if insert_vote(vote_data):
+                    inserted += 1
+                consecutive_misses = 0
+            else:
+                consecutive_misses += 1
+        logging.info(f"✅ {chamber.title()} votes inserted: {inserted}")
 
 if __name__ == "__main__":
     run()
