@@ -24,15 +24,15 @@ VOTE_MAP = {
     "Unknown": "Unknown"
 }
 
-def get_vote_id_map(cursor):
-    cursor.execute("SELECT vote_id, id FROM votes;")
+def get_vote_session_map(cursor):
+    cursor.execute("SELECT vote_id, id FROM vote_sessions;")
     return {vote_id: id_ for vote_id, id_ in cursor.fetchall()}
 
-def get_legislator_id_map(cursor):
+def get_legislator_map(cursor):
     cursor.execute("SELECT bioguide_id, id FROM legislators;")
     return {bio.upper(): id_ for bio, id_ in cursor.fetchall()}
 
-def parse_vote_records(congress, session, roll, vote_id_map, legislator_id_map):
+def parse_vote_records(congress, session, roll, session_map, legislator_map):
     vote_id = f"house-{congress}-{session}-{roll}"
     url = f"https://clerk.house.gov/evs/2023/roll{str(roll).zfill(3)}.xml"
     logging.info(f"📄 Processing: {url}")
@@ -46,9 +46,9 @@ def parse_vote_records(congress, session, roll, vote_id_map, legislator_id_map):
 
     try:
         root = ET.fromstring(response.content)
-        vote_fk = vote_id_map.get(vote_id)
-        if not vote_fk:
-            logging.warning(f"⚠️ Skipping vote {vote_id} (not found in vote_id_map)")
+        vote_session_id = session_map.get(vote_id)
+        if not vote_session_id:
+            logging.warning(f"⚠️ Skipping vote {vote_id} (not found in vote_sessions)")
             return []
 
         records = []
@@ -62,12 +62,14 @@ def parse_vote_records(congress, session, roll, vote_id_map, legislator_id_map):
                 continue
             bioguide_id = bioguide_id.strip().upper()
             vote_cast = record.findtext("vote", default="Unknown").strip()
-            normalized = VOTE_MAP.get(vote_cast, "Unknown")
-            legislator_fk = legislator_id_map.get(bioguide_id)
-            if not legislator_fk:
-                logging.warning(f"⚠️ Bioguide ID '{bioguide_id}' not found in legislators table.")
+            normalized_vote = VOTE_MAP.get(vote_cast, "Unknown")
+
+            legislator_id = legislator_map.get(bioguide_id)
+            if not legislator_id:
+                logging.warning(f"⚠️ Legislator ID '{bioguide_id}' not found in database.")
                 continue
-            records.append((vote_fk, legislator_fk, normalized))
+
+            records.append((vote_session_id, legislator_id, normalized_vote))
         return records
     except Exception as e:
         logging.error(f"❌ Error parsing XML from {url}: {e}")
@@ -78,22 +80,22 @@ def main():
 
     conn = psycopg2.connect(DB_URL)
     cursor = conn.cursor()
-    vote_id_map = get_vote_id_map(cursor)
-    legislator_id_map = get_legislator_id_map(cursor)
+    session_map = get_vote_session_map(cursor)
+    legislator_map = get_legislator_map(cursor)
 
     congress = 118
     session = 1
-    roll_calls = [1, 2]  # You can expand this list later
+    roll_calls = [1, 2]  # Can be expanded
 
     batch_data = []
     for roll in roll_calls:
-        records = parse_vote_records(congress, session, roll, vote_id_map, legislator_id_map)
+        records = parse_vote_records(congress, session, roll, session_map, legislator_map)
         batch_data.extend(records)
 
     if batch_data:
         logging.info(f"✅ Inserting {len(batch_data)} vote records...")
         execute_batch(cursor, """
-            INSERT INTO vote_records (vote_id, legislator_id, vote_cast)
+            INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
             VALUES (%s, %s, %s)
             ON CONFLICT DO NOTHING;
         """, batch_data)
