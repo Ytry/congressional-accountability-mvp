@@ -57,7 +57,7 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
             time.sleep(RETRY_DELAY)
             continue
 
-        # no such page or fallback
+        # 404 or fallback page -> no such vote
         if r.status_code == 404 or "vote-not-available" in r.url:
             logging.debug(f"No vote page: {url} (status {r.status_code})")
             return None
@@ -80,8 +80,8 @@ def list_senate_rolls(congress: int, session: int) -> List[int]:
         return []
     soup = BeautifulSoup(resp.text, "html.parser")
     rolls: List[int] = []
-    for a in soup.select("a[href*='vote_"]"):
-        href = a.get('href', '')
+    for a in soup.select("a[href*='vote_']"):
+        href = a.get("href", "")
         match = re.search(r"vote_\d+_\d+_(\d{5})", href)
         if match:
             rolls.append(int(match.group(1)))
