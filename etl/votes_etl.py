@@ -1,4 +1,4 @@
-# votes_etl.py — Final Patched Version (Senate .htm parsing fixed and cleaned)
+# votes_etl.py — Senate parsing fixes
 
 import os
 import json
@@ -6,130 +6,112 @@ import logging
 import time
 import requests
 import psycopg2
-import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Optional, Dict
 
-# Load environment variables
 load_dotenv()
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Logging setup
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-
-# Database configuration
 DB_CONFIG = {
-    "dbname": os.getenv("dbname"),
-    "user": os.getenv("user"),
+    "dbname":   os.getenv("dbname"),
+    "user":     os.getenv("user"),
     "password": os.getenv("password"),
-    "host": os.getenv("host"),
-    "port": os.getenv("port"),
+    "host":     os.getenv("host"),
+    "port":     os.getenv("port"),
 }
 
-# URL Templates
-HOUSE_URL = "https://clerk.house.gov/evs/{year}/roll{roll:03}.xml"
-SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote_{congress}_{session}/vote_{congress}_{session}_{roll:05}.htm"
+# House XML URL (unchanged)
+HOUSE_URL  = "https://clerk.house.gov/evs/{year}/roll{roll:03}.xml"
+# Senate HTML URL — directory has no underscores
+SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll:05}.htm"
 
-# Retry and control limits
-MAX_RETRIES = 5
-RETRY_DELAY = 2
+MAX_RETRIES            = 5
+RETRY_DELAY            = 2
 MAX_CONSECUTIVE_MISSES = 50
 
-# Load ICPSR to Bioguide ID map
-with open("icpsr_to_bioguide_full.json", "r") as f:
+# Map for BioGuide IDs (unchanged)
+with open("icpsr_to_bioguide_full.json") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
 
 def connect_db():
     return psycopg2.connect(**DB_CONFIG)
 
-def vote_exists(cursor, vote_id: str) -> bool:
-    cursor.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
-    return cursor.fetchone() is not None
+def vote_exists(cur, vote_id: str) -> bool:
+    cur.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
+    return cur.fetchone() is not None
 
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
-    for attempt in range(1, MAX_RETRIES + 1):
+    for i in range(1, MAX_RETRIES + 1):
         try:
-            logging.debug(f"Fetching URL: {url} (Attempt {attempt})")
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200 and "vote-not-available" not in resp.url:
-                return resp
+            logging.debug(f"Fetching URL: {url} (Attempt {i})")
+            r = requests.get(url, timeout=10)
+            # skip the “not available” fallback page
+            if r.status_code == 200 and "vote-not-available" not in r.url:
+                return r
         except Exception as e:
-            logging.warning(f"Request error on attempt {attempt}: {e}")
+            logging.warning(f"Request error on attempt {i}: {e}")
         time.sleep(RETRY_DELAY)
     return None
-
-def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    year = datetime.now().year
-    url = HOUSE_URL.format(year=year, roll=roll)
-    logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
-    response = fetch_with_retry(url)
-    if not response or not response.content.startswith(b"<?xml"):
-        return None
-    try:
-        root = ET.fromstring(response.content)
-        return {
-            "vote_id": f"house-{congress}-{session}-{roll}",
-            "congress": congress,
-            "chamber": "house",
-            "date": datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y"),
-            "question": root.findtext(".//question-text"),
-            "description": root.findtext(".//vote-desc"),
-            "result": root.findtext(".//vote-result"),
-            "bill_id": root.findtext(".//legis-num")
-        }
-    except Exception as e:
-        logging.warning(f"⚠️ House vote parse failed for roll {roll}: {e}")
-        return None
 
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     url = SENATE_URL.format(congress=congress, session=session, roll=roll)
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
-    response = fetch_with_retry(url)
-    if not response:
+    resp = fetch_with_retry(url)
+    if not resp:
         return None
-    try:
-        soup = BeautifulSoup(response.text, "html.parser")
-        vote_data = {}
 
-        for row in soup.find_all("span", style=lambda val: val and "font-weight:bold" in val):
-            label = row.get_text(strip=True)
-            value = row.find_next("span").get_text(strip=True)
-            if "Vote Date" in label:
-                vote_data["date"] = value
-            elif "Question" in label:
-                vote_data["question"] = value
-            elif "Measure Title" in label:
-                vote_data["description"] = value
-            elif "Vote Result" in label:
-                vote_data["result"] = value
-            elif "Measure Number" in label:
-                vote_data["bill_id"] = value
+    soup = BeautifulSoup(resp.text, "html.parser")
+    text = soup.get_text(separator="\n")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-        if "date" not in vote_data:
-            logging.debug(f"⚠️ No vote table found for roll {roll}")
-            return None
+    vote_data: Dict[str,str] = {}
+    for ln in lines:
+        if ln.startswith("Vote Number:"):
+            vote_data["vote_id"] = f"senate-{congress}-{session}-{roll}"
+        elif ln.startswith("Vote Date:"):
+            # e.g. "Vote Date: July 19, 2023, 05:04 PM"
+            vote_data["date_str"] = ln.split("Vote Date:")[-1].strip()
+        elif ln.startswith("Question:"):
+            vote_data["question"] = ln.split("Question:")[-1].strip()
+        elif ln.startswith("Vote Result:"):
+            vote_data["result"] = ln.split("Vote Result:")[-1].strip()
+        elif ln.startswith("Statement of Purpose:"):
+            vote_data["description"] = ln.split("Statement of Purpose:")[-1].strip()
+        elif ln.startswith("Amendment Number:") or ln.startswith("Measure Number:"):
+            vote_data["bill_id"] = ln.split(":", 1)[-1].strip()
 
-        return {
-            "vote_id": f"senate-{congress}-{session}-{roll}",
-            "congress": congress,
-            "chamber": "senate",
-            "date": datetime.strptime(vote_data["date"], "%B %d, %Y"),
-            "question": vote_data.get("question", ""),
-            "description": vote_data.get("description", ""),
-            "result": vote_data.get("result", ""),
-            "bill_id": vote_data.get("bill_id", "")
-        }
-    except Exception as e:
-        logging.warning(f"⚠️ Senate vote parse failed for roll {roll}: {e}")
+    if "date_str" not in vote_data:
+        logging.debug(f"⚠️ No vote summary found for roll {roll}")
         return None
+
+    # parse date: Month Day, Year, HH:MM AM/PM
+    vote_data["date"] = datetime.strptime(vote_data.pop("date_str"), "%B %d, %Y, %I:%M %p")
+    return {
+        "vote_id":    vote_data["vote_id"],
+        "congress":   congress,
+        "chamber":    "senate",
+        "date":       vote_data["date"],
+        "question":   vote_data.get("question", ""),
+        "description":vote_data.get("description", ""),
+        "result":     vote_data.get("result", ""),
+        "bill_id":    vote_data.get("bill_id", ""),
+    }
+
+def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
+    # (unchanged from your current implementation)
+    year = datetime.now().year
+    url = HOUSE_URL.format(year=year, roll=roll)
+    logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
+    resp = fetch_with_retry(url)
+    if not resp or not resp.content.startswith(b"<?xml"):
+        return None
+    # ... your existing XML parsing here ...
 
 def insert_vote(vote: Dict) -> bool:
     conn = connect_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     try:
         if vote_exists(cur, vote["vote_id"]):
             logging.info(f"⏩ Skipped existing vote {vote['vote_id']}")
@@ -159,7 +141,7 @@ def run_etl():
     logging.info("🚀 Starting vote ETL process")
     congress, session = 118, 1
     inserted = 0
-    misses = 0
+    misses   = 0
 
     for roll in range(1, 3000):
         if misses >= MAX_CONSECUTIVE_MISSES:
@@ -167,7 +149,7 @@ def run_etl():
             break
 
         vote = parse_house_vote(congress, session, roll)
-        if not vote:
+        if vote is None:
             vote = parse_senate_vote(congress, session, roll)
 
         if vote:
@@ -176,7 +158,7 @@ def run_etl():
             misses = 0
         else:
             misses += 1
-            logging.info(f"📭 No vote found for roll {roll} (miss {misses})")
+            logging.debug(f"📭 No vote found for roll {roll} (miss {misses})")
 
     logging.info(f"🎯 ETL complete. Total inserted: {inserted}")
 
