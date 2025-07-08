@@ -4,14 +4,14 @@ import json
 import logging
 import sys
 
-# Updated URLs for GitHub raw content (valid SSL cert)
-CURRENT_URL    = (
+# URLs for current + historical members (using 'main' branch)
+CURRENT_URL = (
     "https://raw.githubusercontent.com/"
-    "unitedstates/congress-legislators/master/legislators-current.json"
+    "unitedstates/congress-legislators/main/legislators-current.json"
 )
 HISTORICAL_URL = (
     "https://raw.githubusercontent.com/"
-    "unitedstates/congress-legislators/master/legislators-historical.json"
+    "unitedstates/congress-legislators/main/legislators-historical.json"
 )
 
 
@@ -41,15 +41,11 @@ def build_name_to_bioguide(output_path: str = "name_to_bioguide.json"):
             middle = person["name"].get("middle", "")
             last   = person["name"]["last"]
 
-            # build full name key (include middle when present)
             full = f"{first} {middle + ' ' if middle else ''}{last}".strip()
-
-            # warn on collisions
             if full in name_to_biog and name_to_biog[full] != biog:
                 logging.warning(f"Collision: {full} → {name_to_biog[full]} overwritten by {biog}")
             name_to_biog[full] = biog
 
-    # write out
     with open(output_path, "w") as f:
         json.dump(name_to_biog, f, indent=2)
     logging.info(f"Wrote {len(name_to_biog)} entries to {output_path}")
