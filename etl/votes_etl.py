@@ -29,7 +29,8 @@ SENATE_URL = (
     "vote{congress}{session}/vote_{congress}_{session}_{roll:05}.htm"
 )
 
-# Retry and miss configuration\ nMAX_RETRIES            = 1
+# Retry and miss configuration
+MAX_RETRIES            = 1
 RETRY_DELAY            = 0.5
 MAX_CONSECUTIVE_MISSES = 10
 
