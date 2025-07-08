@@ -182,7 +182,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "description":root.findtext(".//vote-desc") or "",
         "result":     root.findtext(".//vote-result") or "",
         "bill_id":    root.findtext(".//legis-num") or "",
-        "tally":      []  # implement house positions if needed
+        "tally":      []
     }
     return vote
 
@@ -235,13 +235,19 @@ def run_etl():
             logging.warning("🛑 Too many misses, exiting ETL loop")
             break
         vote = parse_house_vote(congress, session, roll) or parse_senate_vote(congress, session, roll)
-        if vote and insert_vote(vote):
-            inserted += 1
-            misses = 0
-        else:
+        if vote is None:
             misses += 1
             logging.debug(f"📭 No vote for roll {roll} (miss {misses})")
+            continue
+        # Reset miss counter when vote data exists
+        # Attempt insert
+        if insert_vote(vote):
+            inserted += 1
+        # Do not count skipped/failed insert toward misses
+        misses = 0
+
     logging.info(f"🎯 ETL complete. Total inserted: {inserted}")
+
 
 if __name__ == "__main__":
     run_etl()
