@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Optional, Dict, List
+import xml.etree.ElementTree as ET
 
 # Load environment
 load_dotenv()
@@ -49,18 +50,15 @@ except FileNotFoundError:
 
 
 def connect_db():
-    """Establish a new database connection."""
     return psycopg2.connect(**DB_CONFIG)
 
 
 def vote_exists(cur, vote_id: str) -> bool:
-    """Check if a given vote_id already exists in the votes table."""
     cur.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
     return cur.fetchone() is not None
 
 
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
-    """Fetch a URL with retries and skip fallback pages."""
     for i in range(1, MAX_RETRIES + 1):
         try:
             logging.debug(f"Fetching URL: {url} (Attempt {i})")
@@ -74,9 +72,6 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
 
 
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    """
-    Parse Senate roll-call HTML page to extract vote metadata and individual positions.
-    """
     url = SENATE_URL.format(congress=congress, session=session, roll=roll)
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
     resp = fetch_with_retry(url)
@@ -87,7 +82,6 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     text = soup.get_text(separator="\n")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    # Map human labels to internal keys
     FIELD_MAP = {
         "Vote Number":            "vote_number",
         "Vote Date":              "date_str",
@@ -132,10 +126,8 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "bill_id":     raw_data.get("bill_id", ""),
     }
 
-    # ── Extract roll-call tally with fallback ──
     table = soup.find("table", class_="roll_call")
     if not table:
-        # Fallback: find table by header keywords
         for tbl in soup.find_all("table"):
             headers = [th.get_text(strip=True).lower() for th in tbl.find_all("th")]
             if any(h in ["yea", "yeas", "nay", "nays", "not voting"] for h in headers):
@@ -154,7 +146,6 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
                 continue
             raw_name = cols[0].get_text(strip=True)
             position = cols[1].get_text(strip=True)
-            # Normalize "Last, First" → "First Last"
             if "," in raw_name:
                 last, first = [p.strip() for p in raw_name.split(",", 1)]
                 norm_name = f"{first} {last}"
@@ -169,36 +160,39 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     return vote
 
 
-def parse_house_vote(congress, session, roll) -> Dict or None:
-    url = HOUSE_URL.format(roll=str(roll).zfill(3))
+def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
+    year = datetime.now().year
+    url = HOUSE_URL.format(year=year, roll=str(roll).zfill(3))
     logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
-            logging.debug(f"House vote not found or not valid XML: {url}")
-            return None
-        root = ET.fromstring(resp.content)
-        return {
-            "vote_id": f"house-{congress}-{session}-{roll}",
-            "congress": congress,
-            "chamber": "house",
-            "date": datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y"),
-            "question": root.findtext(".//question-text"),
-            "description": root.findtext(".//vote-desc"),
-            "result": root.findtext(".//vote-result"),
-            "bill_id": root.findtext(".//legis-num")
-        }
-    except Exception as e:
-        logging.warning(f"⚠️ Failed House roll {roll}: {e}")
+    resp = fetch_with_retry(url)
+    if not resp or not resp.content.strip().startswith(b"<?xml"):
+        logging.debug(f"House vote not found or invalid XML: {url}")
         return None
+    try:
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to parse House XML for roll {roll}: {e}")
+        return None
+    vote = {
+        "vote_id":    f"house-{congress}-{session}-{roll}",
+        "congress":   congress,
+        "chamber":    "house",
+        "date":       datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y"),
+        "question":   root.findtext(".//question-text") or "",
+        "description":root.findtext(".//vote-desc") or "",
+        "result":     root.findtext(".//vote-result") or "",
+        "bill_id":    root.findtext(".//legis-num") or "",
+        "tally":      []  # implement house positions if needed
+    }
+    return vote
+
 
 def insert_vote_positions(vote_id: str, tally: List[Dict[str, str]], cur):
     rows = [(vote_id, pos["bioguide_id"], pos["position"]) for pos in tally if pos.get("bioguide_id")]
     if not rows:
         return
     cur.executemany(
-        "INSERT INTO vote_positions (vote_id, bioguide_id, position) VALUES (%s, %s, %s);",
-        rows
+        "INSERT INTO vote_positions (vote_id, bioguide_id, position) VALUES (%s, %s, %s);", rows
     )
     logging.info(f"✅ Inserted {len(rows)} positions for {vote_id}")
 
@@ -211,8 +205,11 @@ def insert_vote(vote: Dict) -> bool:
             logging.info(f"⏩ Skipped existing vote {vote['vote_id']}")
             return False
         cur.execute(
-            "INSERT INTO votes (vote_id, congress, chamber, date, question, description, result, bill_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);",
-            (vote["vote_id"], vote["congress"], vote["chamber"], vote["date"], vote["question"], vote["description"], vote["result"], vote["bill_id"])  # noqa
+            "INSERT INTO votes (vote_id, congress, chamber, date, question, description, result, bill_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s);", (
+                vote["vote_id"], vote["congress"], vote["chamber"], vote["date"],
+                vote["question"], vote["description"], vote["result"], vote["bill_id"]
+            )
         )
         if vote.get("tally"):
             insert_vote_positions(vote["vote_id"], vote["tally"], cur)
