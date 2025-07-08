@@ -68,30 +68,39 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
 
     # map the human label -> our internal key
     FIELD_MAP = {
-        "Vote Number":         "vote_number",
-        "Vote Date":           "date_str",
-        "Question":            "question",
-        "Vote Result":         "result",
-        "Statement of Purpose":"description",
-        "Amendment Number":    "bill_id",
-        "Measure Number":      "bill_id",
+        "Vote Number":           "vote_number",
+        "Vote Date":             "date_str",
+        "Question":              "question",
+        "Vote Result":           "result",
+        "Statement of Purpose":  "description",
+        "Nomination Description": "description",
+        "Amendment Number":      "bill_id",
+        "Measure Number":        "bill_id",
     }
 
     vote_data: Dict[str,str] = {}
-    for ln in lines:
-        if ":" not in ln:
+    for idx, ln in enumerate(lines):
+        # case A: broken-out label on its own line
+        if ln.endswith(":") and ln[:-1].strip() in FIELD_MAP:
+            key = FIELD_MAP[ln[:-1].strip()]
+            # grab the very next non-empty line as the value
+            if idx + 1 < len(lines):
+                vote_data[key] = lines[idx+1].strip()
             continue
-        label, val = (part.strip() for part in ln.split(":", 1))
-        if label in FIELD_MAP:
-            vote_data[FIELD_MAP[label]] = val
 
-    # if we didn't even get a Vote Date, give up
+        # case B: inline label and value
+        if ":" in ln:
+            label, val = (part.strip() for part in ln.split(":", 1))
+            if label in FIELD_MAP:
+                vote_data[FIELD_MAP[label]] = val
+
+    # bail if we never got a date
     ds = vote_data.get("date_str", "")
     if not ds:
         logging.debug(f"⚠️ No date found for Senate roll {roll}, skipping.")
         return None
 
-    # now parse the date (e.g. "July 1, 2025, 04:08 AM")
+    # parse "July 19, 2023, 05:04 PM"
     try:
         vote_date = datetime.strptime(ds, "%B %d, %Y, %I:%M %p")
     except ValueError:
@@ -99,14 +108,14 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         return None
 
     return {
-        "vote_id":    f"senate-{congress}-{session}-{roll}",
-        "congress":   congress,
-        "chamber":    "senate",
-        "date":       vote_date,
-        "question":   vote_data.get("question", ""),
-        "description":vote_data.get("description", ""),
-        "result":     vote_data.get("result", ""),
-        "bill_id":    vote_data.get("bill_id", ""),
+        "vote_id":     f"senate-{congress}-{session}-{roll}",
+        "congress":    congress,
+        "chamber":     "senate",
+        "date":        vote_date,
+        "question":    vote_data.get("question", ""),
+        "description": vote_data.get("description", ""),
+        "result":      vote_data.get("result", ""),
+        "bill_id":     vote_data.get("bill_id", ""),
     }
 
 
