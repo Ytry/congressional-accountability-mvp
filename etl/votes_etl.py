@@ -1,11 +1,13 @@
-# votes_etl.py — Final Patched Version with Senate URL Fix
+
+# votes_etl.py — Final Merged Version with Senate URL Fix, Retry Logic, Logging, and Vote Unavailable Handling
 
 import os
+import json
+import logging
+import time
 import requests
 import psycopg2
 import xml.etree.ElementTree as ET
-import json
-import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Dict, Optional
@@ -29,12 +31,17 @@ DB_CONFIG = {
     "port": os.getenv("port"),
 }
 
+# Constants
+HOUSE_URL = "https://clerk.house.gov/evs/{year}/roll{roll:03}.xml"
+SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote_{congress}_{session}/vote_{congress}_{session}_{roll:05}.xml"
+UNAVAILABLE_URL_FRAGMENT = "roll-call-vote-not-available"
+MAX_CONSECUTIVE_MISSES = 50
+MAX_RETRIES = 10
+RETRY_DELAY = 2
+
 # Bioguide Map
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
-
-HOUSE_URL = "https://clerk.house.gov/evs/2023/roll{roll}.xml"
-SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote_{congress}_{session}/vote_{congress}_{session}_{roll}.xml"
 
 def db_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -43,15 +50,30 @@ def vote_exists(cur, vote_id: str) -> bool:
     cur.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
     return cur.fetchone() is not None
 
+def get_xml_with_retry(url: str) -> Optional[ET.Element]:
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logging.debug(f"Fetching: {url} (Attempt {attempt})")
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 404 or UNAVAILABLE_URL_FRAGMENT in resp.url or UNAVAILABLE_URL_FRAGMENT in resp.text.lower():
+                logging.debug("Vote unavailable or redirected")
+                return None
+            if resp.status_code == 200 and resp.content.strip().startswith(b"<?xml"):
+                return ET.fromstring(resp.content)
+        except Exception as e:
+            logging.warning(f"Retry {attempt} failed for URL {url}: {e}")
+        time.sleep(RETRY_DELAY)
+    logging.error(f"Max retries exceeded for {url}")
+    return None
+
 def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    url = HOUSE_URL.format(roll=str(roll).zfill(3))
+    year = datetime.now().year
+    url = HOUSE_URL.format(year=year, roll=roll)
     logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
-            logging.debug(f"House roll {roll} unavailable or invalid.")
+        root = get_xml_with_retry(url)
+        if root is None:
             return None
-        root = ET.fromstring(resp.content)
         return {
             "vote_id": f"house-{congress}-{session}-{roll}",
             "congress": congress,
@@ -67,18 +89,12 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         return None
 
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    roll_str = str(roll).zfill(5)
-    url = SENATE_URL.format(congress=congress, session=session, roll=roll_str)
+    url = SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
     try:
-        resp = requests.get(url, timeout=10)
-        if "roll-call-vote-not-available" in resp.text.lower():
-            logging.debug(f"Senate roll {roll} page says vote not available.")
+        root = get_xml_with_retry(url)
+        if root is None:
             return None
-        if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
-            logging.debug(f"Senate roll {roll} unavailable or invalid.")
-            return None
-        root = ET.fromstring(resp.content)
         return {
             "vote_id": f"senate-{congress}-{session}-{roll}",
             "congress": congress,
@@ -101,10 +117,10 @@ def insert_vote(vote: Dict) -> bool:
             logging.info(f"⏩ Already exists: {vote['vote_id']}")
             return False
         cur.execute("""
-            INSERT INTO votes (
-                vote_id, congress, chamber, date, question,
-                description, result, bill_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO votes (
+            vote_id, congress, chamber, date, question,
+            description, result, bill_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             vote["vote_id"], vote["congress"], vote["chamber"],
             vote["date"], vote["question"], vote["description"],
@@ -125,12 +141,11 @@ def run():
     logging.info("🚀 Starting votes_etl run")
     congress, session = 118, 1
     max_rolls = 3000
-    max_misses = 50
     misses = 0
     inserted = 0
 
     for roll in range(1, max_rolls + 1):
-        if misses >= max_misses:
+        if misses >= MAX_CONSECUTIVE_MISSES:
             logging.warning("🛑 Too many consecutive misses — stopping early.")
             break
 
