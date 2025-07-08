@@ -169,10 +169,28 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     return vote
 
 
-def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    # ... existing implementation unchanged ...
-    return None
-
+def parse_house_vote(congress, session, roll) -> Dict or None:
+    url = HOUSE_URL.format(roll=str(roll).zfill(3))
+    logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
+            logging.debug(f"House vote not found or not valid XML: {url}")
+            return None
+        root = ET.fromstring(resp.content)
+        return {
+            "vote_id": f"house-{congress}-{session}-{roll}",
+            "congress": congress,
+            "chamber": "house",
+            "date": datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y"),
+            "question": root.findtext(".//question-text"),
+            "description": root.findtext(".//vote-desc"),
+            "result": root.findtext(".//vote-result"),
+            "bill_id": root.findtext(".//legis-num")
+        }
+    except Exception as e:
+        logging.warning(f"⚠️ Failed House roll {roll}: {e}")
+        return None
 
 def insert_vote_positions(vote_id: str, tally: List[Dict[str, str]], cur):
     rows = [(vote_id, pos["bioguide_id"], pos["position"]) for pos in tally if pos.get("bioguide_id")]
