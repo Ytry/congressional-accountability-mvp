@@ -6,12 +6,10 @@ import sys
 
 # Raw GitHub URLs (main branch)
 CURRENT_URL    = (
-    "https://raw.githubusercontent.com/"
-    "unitedstates/congress-legislators/main/legislators-current.json"
+    "https://unitedstates.github.io/congress-legislators/legislators-current.json"
 )
 HISTORICAL_URL = (
-    "https://raw.githubusercontent.com/"
-    "unitedstates/congress-legislators/main/legislators-historical.json"
+    "https://unitedstates.github.io/congress-legislators/legislators-historical.json"
 )
 
 def fetch_legislators(url: str) -> list:
