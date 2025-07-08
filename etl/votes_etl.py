@@ -80,7 +80,7 @@ def list_senate_rolls(congress: int, session: int) -> List[int]:
         return []
     soup = BeautifulSoup(resp.text, "html.parser")
     rolls: List[int] = []
-    for a in soup.select("a[href*='vote_"]":
+    for a in soup.select("a[href*='vote_"]"):
         href = a.get('href', '')
         match = re.search(r"vote_\d+_\d+_(\d{5})", href)
         if match:
