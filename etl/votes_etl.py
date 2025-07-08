@@ -1,4 +1,4 @@
-# votes_etl.py — Final Merged Version with Senate URL Fix, Retry Logic, Logging, and Vote Unavailable Handling
+# votes_etl.py — Final Merged Version
 
 import os
 import json
@@ -38,16 +38,19 @@ MAX_CONSECUTIVE_MISSES = 50
 MAX_RETRIES = 10
 RETRY_DELAY = 2
 
-# Bioguide Map
+# Load Bioguide map
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
+
 
 def db_connection():
     return psycopg2.connect(**DB_CONFIG)
 
+
 def vote_exists(cur, vote_id: str) -> bool:
     cur.execute("SELECT 1 FROM votes WHERE vote_id = %s", (vote_id,))
     return cur.fetchone() is not None
+
 
 def get_xml_with_retry(url: str) -> Optional[ET.Element]:
     for attempt in range(1, MAX_RETRIES + 1):
@@ -64,6 +67,7 @@ def get_xml_with_retry(url: str) -> Optional[ET.Element]:
         time.sleep(RETRY_DELAY)
     logging.error(f"Max retries exceeded for {url}")
     return None
+
 
 def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     year = datetime.now().year
@@ -87,6 +91,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         logging.warning(f"⚠️ Failed to parse House roll {roll}: {e}")
         return None
 
+
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     url = SENATE_URL.format(congress=congress, session=session, roll=roll)
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
@@ -107,6 +112,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     except Exception as e:
         logging.warning(f"⚠️ Failed to parse Senate roll {roll}: {e}")
         return None
+
 
 def insert_vote(vote: Dict) -> bool:
     conn = db_connection()
@@ -136,6 +142,7 @@ def insert_vote(vote: Dict) -> bool:
         cur.close()
         conn.close()
 
+
 def run():
     logging.info("🚀 Starting votes_etl run")
     congress, session = 118, 1
@@ -163,6 +170,7 @@ def run():
             logging.info(f"📭 No vote found for roll {roll} (miss {misses})")
 
     logging.info(f"🎯 ETL finished. Total inserted: {inserted}")
+
 
 if __name__ == "__main__":
     run()
