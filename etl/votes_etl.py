@@ -27,7 +27,7 @@ HOUSE_URL  = "https://clerk.house.gov/evs/{year}/roll{roll:03}.xml"
 # Senate HTML URL — directory has no underscores
 SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll:05}.htm"
 
-MAX_RETRIES            = 3
+MAX_RETRIES            = 1
 RETRY_DELAY            = 1
 MAX_CONSECUTIVE_MISSES = 25
 
