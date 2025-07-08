@@ -126,16 +126,27 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "bill_id":     raw_data.get("bill_id", ""),
     }
 
+    # ── Extract roll-call tally with enhanced fallback ──
     table = soup.find("table", class_="roll_call")
+    # Fallback #1: header or first-row cells containing Yeas/Nays
     if not table:
         for tbl in soup.find_all("table"):
-            headers = [th.get_text(strip=True).lower() for th in tbl.find_all("th")]
-            if any(h in ["yea", "yeas", "nay", "nays", "not voting"] for h in headers):
+            hdrs = [th.get_text(strip=True).lower() for th in tbl.find_all("th")]
+            first_row = tbl.find("tr")
+            if first_row:
+                hdrs += [td.get_text(strip=True).lower() for td in first_row.find_all("td")]
+            if any(h in ("yea","yeas","nay","nays","not voting") for h in hdrs):
                 table = tbl
-                logging.debug(f"🔄 Using fallback table for Senate roll {roll}")
+                logging.debug(f"🔄 Fallback-1: using Yeas/Nays table for roll {roll}")
                 break
+    # Fallback #2: choose the table with the most rows
     if not table:
-        logging.warning(f"⚠️ No roll_call table found for Senate roll {roll}")
+        tables = soup.find_all("table")
+        if tables:
+            table = max(tables, key=lambda t: len(t.find_all("tr")))
+            logging.debug(f"🔄 Fallback-2: using largest table ({len(table.find_all('tr'))} rows) for roll {roll}")
+    if not table:
+        logging.warning(f"⚠️ No vote-tally table found for Senate roll {roll}")
         vote["tally"] = []
     else:
         tally: List[Dict[str, str]] = []
@@ -185,7 +196,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "tally":      []
     }
     return vote
-
+    
 
 def insert_vote_positions(vote_id: str, tally: List[Dict[str, str]], cur):
     rows = [(vote_id, pos["bioguide_id"], pos["position"]) for pos in tally if pos.get("bioguide_id")]
