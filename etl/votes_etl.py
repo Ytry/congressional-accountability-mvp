@@ -93,48 +93,47 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         logging.warning(f"⚠️ Failed to parse House XML for roll {roll}: {e}")
         return None
 
-    # --- metadata ---
+    # --- metadata (unchanged) ---
     try:
-        vote_date = datetime.strptime(
-            root.findtext(".//action-date"), "%d-%b-%Y"
-        )
+        vote_date = datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y")
     except Exception:
         logging.error(f"❌ Could not parse date for House roll {roll}")
         return None
 
     vote = {
-        "vote_id":    f"house-{congress}-{session}-{roll}",
-        "congress":   congress,
-        "chamber":    "house",
-        "date":       vote_date,
-        "question":   root.findtext(".//question-text") or "",
-        "description":root.findtext(".//vote-desc") or "",
-        "result":     root.findtext(".//vote-result") or "",
-        "bill_id":    root.findtext(".//legis-num") or "",
+        "vote_id":     f"house-{congress}-{session}-{roll}",
+        "congress":    congress,
+        "chamber":     "house",
+        "date":        vote_date,
+        "question":    root.findtext(".//question-text") or "",
+        "description": root.findtext(".//vote-desc")  or "",
+        "result":      root.findtext(".//vote-result")or "",
+        "bill_id":     root.findtext(".//legis-num")  or "",
     }
 
-    # --- positions ---
+    # --- positions, with robust ICPSR lookup & debug logging ---
     tally = []
     for rec in root.findall(".//recorded-vote"):
-        biog = None
+        # 1) locate the element carrying the ID
+        leg = rec.find("legislator") or rec.find("member")
+        attrs = (leg.attrib if leg is not None else rec.attrib)
+        logging.debug(f"House-record attrs for roll {roll}: {attrs}")
 
-        # 1) If the <legislator> tag includes a Bioguide
-        leg = rec.find("legislator")
-        if leg is not None:
-            biog = leg.attrib.get("bioGuideId") or leg.attrib.get("BioGuideID")
+        # 2) try a variety of possible ICPSR/ID keys
+        icpsr = (
+            attrs.get("icpsr-id")
+            or attrs.get("icpsr_id")
+            or attrs.get("member-id")
+            or attrs.get("memberid")
+        )
 
-        # 2) Fallback: map ICPSR → Bioguide only if no bioGuideId
+        if not icpsr:
+            logging.warning(f"⚠️ No ICPSR id found for House record in roll {roll}")
+            continue
+
+        biog = ICPSR_TO_BIOGUIDE.get(str(icpsr))
         if not biog:
-            icpsr = None
-            if leg is not None:
-                icpsr = leg.attrib.get("icpsr-id")
-            if not icpsr:
-                icpsr = rec.attrib.get("member-id")
-            if icpsr:
-                biog = ICPSR_TO_BIOGUIDE.get(str(icpsr))
-
-        if not biog:
-            logging.warning(f"⚠️ Unmapped House member in roll {roll}")
+            logging.warning(f"⚠️ Unmapped House ICPSR {icpsr} in roll {roll}")
             continue
 
         position = rec.findtext("vote") or ""
