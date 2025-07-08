@@ -44,13 +44,10 @@ except FileNotFoundError:
     logging.warning("⚠️ name_to_bioguide.json not found — Senate names will be unmapped")
     NAME_TO_BIOGUIDE = {}
 
-try:
-    with open("icpsr_to_bioguide_full.json") as f:
-        icpsr_to_bioguide_full = json.load(f)
-    logging.debug("Loaded icpsr_to_bioguide_full.json successfully")
-except FileNotFoundError:
-    logging.warning("⚠️ icpsr_to_bioguide_full.json not found — House names will be unmapped")
-    icsr_to_bioguide_full = {}
+# Load ICPSR → BioGuide map for House lookups
+with open("icpsr_to_bioguide_full.json") as f:
+    ICPSR_TO_BIOGUIDE = json.load(f)
+logging.debug("Loaded icpsr_to_bioguide_full.json successfully")
 
 
 def connect_db():
