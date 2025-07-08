@@ -1,4 +1,4 @@
-# votes_etl.py — Senate .htm Parsing Support Added
+# votes_etl.py — Senate .htm Parsing Fixed with BeautifulSoup span/div block parsing
 
 import os
 import json
@@ -30,14 +30,12 @@ DB_CONFIG = {
     "port": os.getenv("port"),
 }
 
-# URL templates
 HOUSE_URL = "https://clerk.house.gov/evs/{year}/roll{roll:03}.xml"
 SENATE_HTM_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote_{congress}_{session}/vote_{congress}_{session}_{roll:05}.htm"
 MAX_CONSECUTIVE_MISSES = 50
-MAX_RETRIES = 10
+MAX_RETRIES = 5
 RETRY_DELAY = 2
 
-# Load ICPSR map
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
 
@@ -65,7 +63,7 @@ def get_html_with_retry(url: str) -> Optional[str]:
         try:
             logging.debug(f"Fetching HTML: {url} (Attempt {attempt})")
             resp = requests.get(url, timeout=10)
-            if "vote_menu" in resp.url or resp.status_code != 200:
+            if "vote-not-available" in resp.url or resp.status_code != 200:
                 return None
             return resp.text
         except Exception as e:
@@ -103,19 +101,21 @@ def parse_senate_vote_htm(congress: int, session: int, roll: int) -> Optional[Di
         return None
     try:
         soup = BeautifulSoup(html, "html.parser")
-        vote_table = soup.find("table", class_="contenttext")
-        if not vote_table:
-            logging.debug("No vote data table found.")
-            return None
-
-        rows = vote_table.find_all("tr")
         vote_data = {}
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) >= 2:
-                key = cells[0].get_text(strip=True).lower()
-                value = cells[1].get_text(strip=True)
-                vote_data[key] = value
+
+        for row in soup.find_all("span", style=lambda val: val and "font-weight:bold" in val):
+            text = row.get_text(strip=True)
+            if "Vote Date" in text:
+                date_text = row.find_next("span").get_text(strip=True)
+                vote_data["date"] = date_text
+            elif "Vote Result" in text:
+                vote_data["result"] = row.find_next("span").get_text(strip=True)
+            elif "Question" in text:
+                vote_data["question"] = row.find_next("span").get_text(strip=True)
+            elif "Measure Title" in text:
+                vote_data["description"] = row.find_next("span").get_text(strip=True)
+            elif "Measure Number" in text:
+                vote_data["bill_id"] = row.find_next("span").get_text(strip=True)
 
         return {
             "vote_id": f"senate-{congress}-{session}-{roll}",
@@ -123,9 +123,9 @@ def parse_senate_vote_htm(congress: int, session: int, roll: int) -> Optional[Di
             "chamber": "senate",
             "date": datetime.strptime(vote_data.get("date", ""), "%B %d, %Y"),
             "question": vote_data.get("question", ""),
-            "description": vote_data.get("measure title", ""),
+            "description": vote_data.get("description", ""),
             "result": vote_data.get("result", ""),
-            "bill_id": vote_data.get("measure number", "")
+            "bill_id": vote_data.get("bill_id", "")
         }
     except Exception as e:
         logging.warning(f"⚠️ Failed to parse Senate .htm vote {roll}: {e}")
@@ -160,7 +160,7 @@ def insert_vote(vote: Dict) -> bool:
         conn.close()
 
 def run():
-    logging.info("🚀 Starting votes_etl with Senate .htm fallback")
+    logging.info("🚀 Starting votes_etl with corrected Senate .htm parsing")
     congress, session = 118, 1
     misses = 0
     inserted = 0
