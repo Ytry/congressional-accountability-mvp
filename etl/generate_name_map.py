@@ -2,18 +2,31 @@
 import requests
 import json
 import logging
+import sys
 
-# URLs for current + historical members
-CURRENT_URL    = "https://theunitedstates.io/congress-legislators/legislators-current.json"
-HISTORICAL_URL = "https://theunitedstates.io/congress-legislators/legislators-historical.json"
+# Updated URLs for GitHub raw content (valid SSL cert)
+CURRENT_URL    = (
+    "https://raw.githubusercontent.com/"
+    "unitedstates/congress-legislators/master/legislators-current.json"
+)
+HISTORICAL_URL = (
+    "https://raw.githubusercontent.com/"
+    "unitedstates/congress-legislators/master/legislators-historical.json"
+)
 
-def fetch_legislators(url):
+
+def fetch_legislators(url: str) -> list:
     logging.info(f"Fetching legislators from {url}")
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-    return r.json()
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logging.error(f"Failed to fetch {url}: {e}")
+        sys.exit(1)
 
-def build_name_to_bioguide(output_path="name_to_bioguide.json"):
+
+def build_name_to_bioguide(output_path: str = "name_to_bioguide.json"):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     name_to_biog = {}
 
@@ -28,12 +41,10 @@ def build_name_to_bioguide(output_path="name_to_bioguide.json"):
             middle = person["name"].get("middle", "")
             last   = person["name"]["last"]
 
-            # build full name key
-            if middle:
-                full = f"{first} {middle} {last}"
-            else:
-                full = f"{first} {last}"
+            # build full name key (include middle when present)
+            full = f"{first} {middle + ' ' if middle else ''}{last}".strip()
 
+            # warn on collisions
             if full in name_to_biog and name_to_biog[full] != biog:
                 logging.warning(f"Collision: {full} → {name_to_biog[full]} overwritten by {biog}")
             name_to_biog[full] = biog
@@ -42,6 +53,7 @@ def build_name_to_bioguide(output_path="name_to_bioguide.json"):
     with open(output_path, "w") as f:
         json.dump(name_to_biog, f, indent=2)
     logging.info(f"Wrote {len(name_to_biog)} entries to {output_path}")
+
 
 if __name__ == "__main__":
     build_name_to_bioguide()
