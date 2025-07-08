@@ -62,42 +62,53 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     if not resp:
         return None
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    text = soup.get_text(separator="\n")
+    soup  = BeautifulSoup(resp.text, "html.parser")
+    text  = soup.get_text(separator="\n")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    # map the human label -> our internal key
+    FIELD_MAP = {
+        "Vote Number":         "vote_number",
+        "Vote Date":           "date_str",
+        "Question":            "question",
+        "Vote Result":         "result",
+        "Statement of Purpose":"description",
+        "Amendment Number":    "bill_id",
+        "Measure Number":      "bill_id",
+    }
 
     vote_data: Dict[str,str] = {}
     for ln in lines:
-        if ln.startswith("Vote Number:"):
-            vote_data["vote_id"] = f"senate-{congress}-{session}-{roll}"
-        elif ln.startswith("Vote Date:"):
-            # e.g. "Vote Date: July 19, 2023, 05:04 PM"
-            vote_data["date_str"] = ln.split("Vote Date:")[-1].strip()
-        elif ln.startswith("Question:"):
-            vote_data["question"] = ln.split("Question:")[-1].strip()
-        elif ln.startswith("Vote Result:"):
-            vote_data["result"] = ln.split("Vote Result:")[-1].strip()
-        elif ln.startswith("Statement of Purpose:"):
-            vote_data["description"] = ln.split("Statement of Purpose:")[-1].strip()
-        elif ln.startswith("Amendment Number:") or ln.startswith("Measure Number:"):
-            vote_data["bill_id"] = ln.split(":", 1)[-1].strip()
+        if ":" not in ln:
+            continue
+        label, val = (part.strip() for part in ln.split(":", 1))
+        if label in FIELD_MAP:
+            vote_data[FIELD_MAP[label]] = val
 
-    if "date_str" not in vote_data:
-        logging.debug(f"⚠️ No vote summary found for roll {roll}")
+    # if we didn't even get a Vote Date, give up
+    ds = vote_data.get("date_str", "")
+    if not ds:
+        logging.debug(f"⚠️ No date found for Senate roll {roll}, skipping.")
         return None
 
-    # parse date: Month Day, Year, HH:MM AM/PM
-    vote_data["date"] = datetime.strptime(vote_data.pop("date_str"), "%B %d, %Y, %I:%M %p")
+    # now parse the date (e.g. "July 1, 2025, 04:08 AM")
+    try:
+        vote_date = datetime.strptime(ds, "%B %d, %Y, %I:%M %p")
+    except ValueError:
+        logging.error(f"❌ Couldn't parse date '{ds}' for roll {roll}")
+        return None
+
     return {
-        "vote_id":    vote_data["vote_id"],
+        "vote_id":    f"senate-{congress}-{session}-{roll}",
         "congress":   congress,
         "chamber":    "senate",
-        "date":       vote_data["date"],
+        "date":       vote_date,
         "question":   vote_data.get("question", ""),
         "description":vote_data.get("description", ""),
         "result":     vote_data.get("result", ""),
         "bill_id":    vote_data.get("bill_id", ""),
     }
+
 
 def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     # (unchanged from your current implementation)
