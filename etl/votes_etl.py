@@ -1,4 +1,3 @@
-
 # votes_etl.py — Final Merged Version with Senate URL Fix, Retry Logic, Logging, and Vote Unavailable Handling
 
 import os
@@ -89,7 +88,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         return None
 
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    url = SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
+    url = SENATE_URL.format(congress=congress, session=session, roll=roll)
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
     try:
         root = get_xml_with_retry(url)
