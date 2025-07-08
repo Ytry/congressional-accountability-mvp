@@ -10,11 +10,11 @@ from dotenv import load_dotenv
 from typing import Optional, Dict, List
 import xml.etree.ElementTree as ET
 
-# Load environment
+# Load environment and configure logging
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Database configuration
+# Database configuration from environment
 DB_CONFIG = {
     "dbname":   os.getenv("dbname"),
     "user":     os.getenv("user"),
@@ -30,26 +30,23 @@ SENATE_URL = (
     "vote{congress}{session}/vote_{congress}_{session}_{roll:05}.htm"
 )
 
-# Retry and miss configuration
+# Retry and loop-stopping parameters
 MAX_RETRIES            = 3
-RETRY_DELAY            = 0.5
+RETRY_DELAY            = 0.5  # seconds
 MAX_CONSECUTIVE_MISSES = 10
 
-# Load ICPSR → BioGuide map
-with open("icpsr_to_bioguide_full.json") as f:
-    ICPSR_TO_BIOGUIDE = json.load(f)
-
-# Load Name → BioGuide map for Senate positions
+# Load Name → BioGuide map for Senate (First Last → Bioguide)
 try:
     with open("name_to_bioguide.json") as f:
         NAME_TO_BIOGUIDE = json.load(f)
     logging.debug("Loaded name_to_bioguide.json successfully")
 except FileNotFoundError:
-    logging.warning("⚠️ name_to_bioguide.json not found — names will be unmapped")
+    logging.warning("⚠️ name_to_bioguide.json not found — Senate names will be unmapped")
     NAME_TO_BIOGUIDE = {}
 
 
 def connect_db():
+    """Get a new database connection."""
     return psycopg2.connect(**DB_CONFIG)
 
 
@@ -59,21 +56,80 @@ def vote_exists(cur, vote_id: str) -> bool:
 
 
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
-    for i in range(1, MAX_RETRIES + 1):
+    """HTTP GET with simple retry logic."""
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            logging.debug(f"Fetching URL: {url} (Attempt {i})")
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200 and "vote-not-available" not in r.url:
-                return r
+            logging.debug(f"Fetching URL (attempt {attempt}): {url}")
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200 and "vote-not-available" not in resp.url:
+                return resp
         except Exception as e:
-            logging.warning(f"Request error on attempt {i}: {e}")
+            logging.warning(f"Request error on {url}: {e}")
         time.sleep(RETRY_DELAY)
     return None
 
 
+def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
+    """
+    Parse a House roll-call XML into metadata + individual positions.
+    Returns None if no valid vote found.
+    """
+    year = datetime.now().year
+    url  = HOUSE_URL.format(year=year, roll=roll)
+    logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
+
+    resp = fetch_with_retry(url)
+    if not resp or not resp.content.strip().startswith(b"<?xml"):
+        return None
+
+    # Parse XML
+    try:
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to parse House XML for roll {roll}: {e}")
+        return None
+
+    # Extract metadata
+    try:
+        vote_date   = datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y")
+    except Exception:
+        logging.error(f"❌ Could not parse date for House roll {roll}")
+        return None
+
+    vote = {
+        "vote_id":    f"house-{congress}-{session}-{roll}",
+        "congress":   congress,
+        "chamber":    "house",
+        "date":       vote_date,
+        "question":   root.findtext(".//question-text") or "",
+        "description":root.findtext(".//vote-desc") or "",
+        "result":     root.findtext(".//vote-result") or "",
+        "bill_id":    root.findtext(".//legis-num") or "",
+    }
+
+    # Extract individual positions
+    tally = []  # list of {bioguide_id, position}
+    for rec in root.findall(".//recorded-vote"):
+        leg_elem = rec.find("legislator")
+        biog = (leg_elem.attrib.get("bioGuideId") or "").strip()
+        pos  = rec.findtext("vote") or ""
+        if not biog:
+            logging.warning(f"⚠️ Unmapped House member in roll {roll}")
+            continue
+        tally.append({"bioguide_id": biog, "position": pos})
+
+    vote["tally"] = tally
+    return vote
+
+
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
+    """
+    Parse a Senate roll-call HTML into metadata + individual positions.
+    Returns None if no valid vote found.
+    """
     url = SENATE_URL.format(congress=congress, session=session, roll=roll)
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
+
     resp = fetch_with_retry(url)
     if not resp:
         return None
@@ -82,148 +138,104 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     text = soup.get_text(separator="\n")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
+    # Map page labels → metadata keys
     FIELD_MAP = {
-        "Vote Number":            "vote_number",
-        "Vote Date":              "date_str",
-        "Question":               "question",
-        "Vote Result":            "result",
-        "Statement of Purpose":   "description",
-        "Nomination Description": "description",
-        "Amendment Number":       "bill_id",
-        "Measure Number":         "bill_id",
+        "Vote Number":          "vote_number",
+        "Vote Date":            "date_str",
+        "Question":             "question",
+        "Vote Result":          "result",
+        "Statement of Purpose": "description",
+        "Amendment Number":     "bill_id",
+        "Measure Number":       "bill_id",
     }
-
-    raw_data: Dict[str, str] = {}
-    for idx, ln in enumerate(lines):
-        if ln.endswith(":") and ln[:-1] in FIELD_MAP:
-            key = FIELD_MAP[ln[:-1]]
-            if idx + 1 < len(lines):
-                raw_data[key] = lines[idx + 1]
+    raw = {}
+    for i, ln in enumerate(lines):
+        if ln.endswith(":") and ln[:-1] in FIELD_MAP and i+1 < len(lines):
+            raw[FIELD_MAP[ln[:-1]]] = lines[i+1]
         elif ":" in ln:
-            label, val = [p.strip() for p in ln.split(":", 1)]
-            if label in FIELD_MAP:
-                raw_data[FIELD_MAP[label]] = val
+            lbl, val = [p.strip() for p in ln.split(":",1)]
+            if lbl in FIELD_MAP:
+                raw[FIELD_MAP[lbl]] = val
 
-    ds = raw_data.get("date_str", "")
+    ds = raw.get("date_str", "")
     if not ds:
-        logging.debug(f"⚠️ No date found for Senate roll {roll}, skipping.")
         return None
-
     try:
         vote_date = datetime.strptime(ds, "%B %d, %Y, %I:%M %p")
     except ValueError:
-        logging.error(f"❌ Could not parse date '{ds}' for roll {roll}")
         return None
 
     vote = {
-        "vote_id":     f"senate-{congress}-{session}-{roll}",
-        "congress":    congress,
-        "chamber":     "senate",
-        "date":        vote_date,
-        "question":    raw_data.get("question", ""),
-        "description": raw_data.get("description", ""),
-        "result":      raw_data.get("result", ""),
-        "bill_id":     raw_data.get("bill_id", ""),
+        "vote_id":    f"senate-{congress}-{session}-{roll}",
+        "congress":   congress,
+        "chamber":    "senate",
+        "date":       vote_date,
+        "question":   raw.get("question",""),
+        "description":raw.get("description",""),
+        "result":     raw.get("result",""),
+        "bill_id":    raw.get("bill_id",""),
     }
 
-    # ── Extract roll-call tally with enhanced fallback ──
+    # Locate roll-call table (with fallbacks)
     table = soup.find("table", class_="roll_call")
-    # Fallback #1: header or first-row cells containing Yeas/Nays
     if not table:
+        # Fallback: headers containing yea/nay
         for tbl in soup.find_all("table"):
-            hdrs = [th.get_text(strip=True).lower() for th in tbl.find_all("th")]
-            first_row = tbl.find("tr")
-            if first_row:
-                hdrs += [td.get_text(strip=True).lower() for td in first_row.find_all("td")]
-            if any(h in ("yea","yeas","nay","nays","not voting") for h in hdrs):
+            hdrs = [h.get_text(strip=True).lower() for h in tbl.find_all("th")]
+            if any(k in hdrs for k in ("yea","nay","not voting")):
                 table = tbl
-                logging.debug(f"🔄 Fallback-1: using Yeas/Nays table for roll {roll}")
                 break
-    # Fallback #2: choose the table with the most rows
-    if not table:
-        tables = soup.find_all("table")
-        if tables:
-            table = max(tables, key=lambda t: len(t.find_all("tr")))
-            logging.debug(f"🔄 Fallback-2: using largest table ({len(table.find_all('tr'))} rows) for roll {roll}")
-    if not table:
-        logging.warning(f"⚠️ No vote-tally table found for Senate roll {roll}")
-        vote["tally"] = []
-    else:
-        tally: List[Dict[str, str]] = []
-        rows = table.find_all("tr")
-        for tr in rows[1:]:
+    if not table and soup.find_all("table"):
+        # Fallback: largest table
+        table = max(soup.find_all("table"), key=lambda t: len(t.find_all("tr")))
+
+    tally = []
+    if table:
+        rows = table.find_all("tr")[1:]
+        for tr in rows:
             cols = tr.find_all("td")
             if len(cols) < 2:
                 continue
             raw_name = cols[0].get_text(strip=True)
             position = cols[1].get_text(strip=True)
+            # Normalize Last, First → First Last
             if "," in raw_name:
-                last, first = [p.strip() for p in raw_name.split(",", 1)]
-                norm_name = f"{first} {last}"
+                last, first = [p.strip() for p in raw_name.split(",",1)]
+                norm = f"{first} {last}"
             else:
-                norm_name = raw_name
-            bioguide_id = NAME_TO_BIOGUIDE.get(norm_name)
-            if not bioguide_id:
-                logging.warning(f"⚠️ Unmapped name '{norm_name}' in roll {roll}")
-            tally.append({"bioguide_id": bioguide_id, "position": position})
-        vote["tally"] = tally
+                norm = raw_name
+            biog = NAME_TO_BIOGUIDE.get(norm)
+            if not biog:
+                logging.warning(f"⚠️ Unmapped Senate name '{norm}' in roll {roll}")
+            tally.append({"bioguide_id": biog, "position": position})
 
+    vote["tally"] = tally
     return vote
-
-
-def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    year = datetime.now().year
-    url = HOUSE_URL.format(year=year, roll=str(roll).zfill(3))
-    logging.info(f"🏛️ HOUSE Roll {roll}: {url}")
-    resp = fetch_with_retry(url)
-    if not resp or not resp.content.strip().startswith(b"<?xml"):
-        logging.debug(f"House vote not found or invalid XML: {url}")
-        return None
-    try:
-        root = ET.fromstring(resp.content)
-    except Exception as e:
-        logging.warning(f"⚠️ Failed to parse House XML for roll {roll}: {e}")
-        return None
-    vote = {
-        "vote_id":    f"house-{congress}-{session}-{roll}",
-        "congress":   congress,
-        "chamber":    "house",
-        "date":       datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y"),
-        "question":   root.findtext(".//question-text") or "",
-        "description":root.findtext(".//vote-desc") or "",
-        "result":     root.findtext(".//vote-result") or "",
-        "bill_id":    root.findtext(".//legis-num") or "",
-        "tally":      []
-    }
-    return vote
-    
-
-def insert_vote_positions(vote_id: str, tally: List[Dict[str, str]], cur):
-    rows = [(vote_id, pos["bioguide_id"], pos["position"]) for pos in tally if pos.get("bioguide_id")]
-    if not rows:
-        return
-    cur.executemany(
-        "INSERT INTO vote_positions (vote_id, bioguide_id, position) VALUES (%s, %s, %s);", rows
-    )
-    logging.info(f"✅ Inserted {len(rows)} positions for {vote_id}")
 
 
 def insert_vote(vote: Dict) -> bool:
+    """Insert metadata & positions into votes + vote_positions tables."""
     conn = connect_db()
     cur  = conn.cursor()
     try:
         if vote_exists(cur, vote["vote_id"]):
-            logging.info(f"⏩ Skipped existing vote {vote['vote_id']}")
+            logging.info(f"⏩ Skipped existing {vote['vote_id']}")
             return False
+        # Insert metadata
         cur.execute(
-            "INSERT INTO votes (vote_id, congress, chamber, date, question, description, result, bill_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s);", (
-                vote["vote_id"], vote["congress"], vote["chamber"], vote["date"],
-                vote["question"], vote["description"], vote["result"], vote["bill_id"]
-            )
+            "INSERT INTO votes (vote_id, congress, chamber, date, question, description, result, bill_id)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (vote["vote_id"], vote["congress"], vote["chamber"], vote["date"],
+             vote["question"], vote["description"], vote["result"], vote["bill_id"])  # noqa
         )
-        if vote.get("tally"):
-            insert_vote_positions(vote["vote_id"], vote["tally"], cur)
+        # Insert positions
+        rows = [(vote["vote_id"], rec["bioguide_id"], rec["position"]) for rec in vote["tally"] if rec.get("bioguide_id")]
+        if rows:
+            cur.executemany(
+                "INSERT INTO vote_positions (vote_id, bioguide_id, position) VALUES (%s, %s, %s)",
+                rows
+            )
+            logging.info(f"✅ Inserted {len(rows)} positions for {vote['vote_id']}")
         conn.commit()
         logging.info(f"✅ Inserted vote {vote['vote_id']}")
         return True
@@ -237,28 +249,30 @@ def insert_vote(vote: Dict) -> bool:
 
 
 def run_etl():
+    """Main ETL loop: iterate rolls, parse, and insert."""
     logging.info("🚀 Starting vote ETL process")
     congress, session = 118, 1
     inserted = 0
     misses   = 0
+
     for roll in range(1, 3000):
         if misses >= MAX_CONSECUTIVE_MISSES:
-            logging.warning("🛑 Too many misses, exiting ETL loop")
+            logging.warning("🛑 Too many misses, exiting ETL")
             break
+
+        # Try House first, then Senate
         vote = parse_house_vote(congress, session, roll) or parse_senate_vote(congress, session, roll)
-        if vote is None:
+        if not vote:
             misses += 1
             logging.debug(f"📭 No vote for roll {roll} (miss {misses})")
             continue
-        # Reset miss counter when vote data exists
-        # Attempt insert
+
+        # Insert and reset miss counter on success or skip
         if insert_vote(vote):
             inserted += 1
-        # Do not count skipped/failed insert toward misses
         misses = 0
 
-    logging.info(f"🎯 ETL complete. Total inserted: {inserted}")
-
+    logging.info(f"🎯 ETL complete. Votes inserted: {inserted}")
 
 if __name__ == "__main__":
     run_etl()
