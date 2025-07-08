@@ -90,16 +90,17 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     if not resp or not resp.content.strip().startswith(b"<?xml"):
         return None
 
-    # Parse XML
     try:
         root = ET.fromstring(resp.content)
     except Exception as e:
         logging.warning(f"⚠️ Failed to parse House XML for roll {roll}: {e}")
         return None
 
-    # Extract metadata
+    # --- metadata ---
     try:
-        vote_date = datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y")
+        vote_date = datetime.strptime(
+            root.findtext(".//action-date"), "%d-%b-%Y"
+        )
     except Exception:
         logging.error(f"❌ Could not parse date for House roll {roll}")
         return None
@@ -115,23 +116,28 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "bill_id":    root.findtext(".//legis-num") or "",
     }
 
-    # Extract individual positions via ICPSR → BioGuide lookup
+    # --- positions ---
     tally = []
     for rec in root.findall(".//recorded-vote"):
-        # 1) Try <legislator icpsr-id="...">
+        biog = None
+
+        # 1) If the <legislator> tag includes a Bioguide
         leg = rec.find("legislator")
-        icpsr = leg.attrib.get("icpsr-id") if leg is not None else None
-        # 2) Fallback: maybe `member-id` on <recorded-vote>
-        if not icpsr:
-            icpsr = rec.attrib.get("member-id")
+        if leg is not None:
+            biog = leg.attrib.get("bioGuideId") or leg.attrib.get("BioGuideID")
 
-        if not icpsr:
-            logging.warning(f"⚠️ No ICPSR id found for House member in roll {roll}")
-            continue
-
-        biog = ICPSR_TO_BIOGUIDE.get(str(icpsr))
+        # 2) Fallback: map ICPSR → Bioguide only if no bioGuideId
         if not biog:
-            logging.warning(f"⚠️ Unmapped House ICPSR {icpsr} in roll {roll}")
+            icpsr = None
+            if leg is not None:
+                icpsr = leg.attrib.get("icpsr-id")
+            if not icpsr:
+                icpsr = rec.attrib.get("member-id")
+            if icpsr:
+                biog = ICPSR_TO_BIOGUIDE.get(str(icpsr))
+
+        if not biog:
+            logging.warning(f"⚠️ Unmapped House member in roll {roll}")
             continue
 
         position = rec.findtext("vote") or ""
@@ -139,6 +145,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
 
     vote["tally"] = tally
     return vote
+
 
 
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
