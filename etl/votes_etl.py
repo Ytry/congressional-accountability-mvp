@@ -44,6 +44,14 @@ except FileNotFoundError:
     logging.warning("⚠️ name_to_bioguide.json not found — Senate names will be unmapped")
     NAME_TO_BIOGUIDE = {}
 
+try:
+    with open("icpsr_to_bioguide_full.json") as f:
+        icpsr_to_bioguide_full = json.load(f)
+    logging.debug("Loaded icpsr_to_bioguide_full.json successfully")
+except FileNotFoundError:
+    logging.warning("⚠️ icpsr_to_bioguide_full.json not found — House names will be unmapped")
+    NAME_TO_BIOGUIDE = {}
+
 
 def connect_db():
     """Get a new database connection."""
@@ -91,7 +99,7 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
 
     # Extract metadata
     try:
-        vote_date   = datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y")
+        vote_date = datetime.strptime(root.findtext(".//action-date"), "%d-%b-%Y")
     except Exception:
         logging.error(f"❌ Could not parse date for House roll {roll}")
         return None
@@ -107,16 +115,27 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "bill_id":    root.findtext(".//legis-num") or "",
     }
 
-    # Extract individual positions
-    tally = []  # list of {bioguide_id, position}
+    # Extract individual positions via ICPSR → BioGuide lookup
+    tally = []
     for rec in root.findall(".//recorded-vote"):
-        leg_elem = rec.find("legislator")
-        biog = (leg_elem.attrib.get("bioGuideId") or "").strip()
-        pos  = rec.findtext("vote") or ""
-        if not biog:
-            logging.warning(f"⚠️ Unmapped House member in roll {roll}")
+        # 1) Try <legislator icpsr-id="...">
+        leg = rec.find("legislator")
+        icpsr = leg.attrib.get("icpsr-id") if leg is not None else None
+        # 2) Fallback: maybe `member-id` on <recorded-vote>
+        if not icpsr:
+            icpsr = rec.attrib.get("member-id")
+
+        if not icpsr:
+            logging.warning(f"⚠️ No ICPSR id found for House member in roll {roll}")
             continue
-        tally.append({"bioguide_id": biog, "position": pos})
+
+        biog = ICPSR_TO_BIOGUIDE.get(str(icpsr))
+        if not biog:
+            logging.warning(f"⚠️ Unmapped House ICPSR {icpsr} in roll {roll}")
+            continue
+
+        position = rec.findtext("vote") or ""
+        tally.append({"bioguide_id": biog, "position": position})
 
     vote["tally"] = tally
     return vote
