@@ -1,10 +1,9 @@
-# votes_etl.py — Robust Final Version
+# votes_etl.py — Final Patched Version with Senate URL Fix
 
 import os
 import requests
 import psycopg2
 import xml.etree.ElementTree as ET
-import csv
 import json
 import logging
 from datetime import datetime
@@ -14,7 +13,7 @@ from typing import Dict, Optional
 # Load environment variables
 load_dotenv()
 
-# Logging setup
+# Logging
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -30,13 +29,12 @@ DB_CONFIG = {
     "port": os.getenv("port"),
 }
 
-# Load ICPSR -> Bioguide map
+# Bioguide Map
 with open("icpsr_to_bioguide_full.json", "r") as f:
     ICPSR_TO_BIOGUIDE = json.load(f)
 
-# URLs
 HOUSE_URL = "https://clerk.house.gov/evs/2023/roll{roll}.xml"
-SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{roll}.csv"
+SENATE_URL = "https://www.senate.gov/legislative/LIS/roll_call_votes/vote_{congress}_{session}/vote_{congress}_{session}_{roll}.xml"
 
 def db_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -69,28 +67,27 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         return None
 
 def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    url = SENATE_URL.format(congress=congress, session=session, roll=str(roll).zfill(5))
+    roll_str = str(roll).zfill(5)
+    url = SENATE_URL.format(congress=congress, session=session, roll=roll_str)
     logging.info(f"🏛️ SENATE Roll {roll}: {url}")
     try:
         resp = requests.get(url, timeout=10)
-        if resp.status_code != 200 or "roll-call-vote-not-available" in resp.text.lower():
-            logging.debug(f"Senate roll {roll} unavailable.")
+        if "roll-call-vote-not-available" in resp.text.lower():
+            logging.debug(f"Senate roll {roll} page says vote not available.")
             return None
-        lines = resp.content.decode("utf-8").splitlines()
-        reader = list(csv.DictReader(lines))
-        if not reader or "Vote Date" not in reader[0]:
-            logging.debug(f"Senate CSV structure unexpected for roll {roll}.")
+        if resp.status_code != 200 or not resp.content.strip().startswith(b"<?xml"):
+            logging.debug(f"Senate roll {roll} unavailable or invalid.")
             return None
-        row = reader[0]
+        root = ET.fromstring(resp.content)
         return {
             "vote_id": f"senate-{congress}-{session}-{roll}",
             "congress": congress,
             "chamber": "senate",
-            "date": datetime.strptime(row["Vote Date"], "%m/%d/%Y"),
-            "question": row.get("Vote Question"),
-            "description": row.get("Vote Title"),
-            "result": row.get("Result"),
-            "bill_id": row.get("Measure Number")
+            "date": datetime.strptime(root.findtext(".//vote_date"), "%m/%d/%Y"),
+            "question": root.findtext(".//question"),
+            "description": root.findtext(".//title"),
+            "result": root.findtext(".//result"),
+            "bill_id": root.findtext(".//measure_number")
         }
     except Exception as e:
         logging.warning(f"⚠️ Failed to parse Senate roll {roll}: {e}")
@@ -125,22 +122,22 @@ def insert_vote(vote: Dict) -> bool:
         conn.close()
 
 def run():
-    logging.info("🚀 Running votes_etl for House and Senate")
+    logging.info("🚀 Starting votes_etl run")
     congress, session = 118, 1
     max_rolls = 3000
-    max_misses = 30
+    max_misses = 50
     misses = 0
     inserted = 0
 
     for roll in range(1, max_rolls + 1):
         if misses >= max_misses:
-            logging.warning(f"🛑 Reached max {max_misses} consecutive misses.")
+            logging.warning("🛑 Too many consecutive misses — stopping early.")
             break
 
-        logging.debug(f"🔍 Checking roll {roll}")
+        logging.debug(f"🔎 Processing roll {roll}")
         vote = parse_house_vote(congress, session, roll)
         if not vote:
-            logging.debug(f"❌ House vote {roll} not found — fallback to Senate.")
+            logging.debug(f"🏛️ House vote {roll} missing — trying Senate")
             vote = parse_senate_vote(congress, session, roll)
 
         if vote:
@@ -149,9 +146,9 @@ def run():
             misses = 0
         else:
             misses += 1
-            logging.info(f"🚫 No valid vote data for roll {roll} (miss {misses})")
+            logging.info(f"📭 No vote found for roll {roll} (miss {misses})")
 
-    logging.info(f"🎯 ETL complete. Total votes inserted: {inserted}")
+    logging.info(f"🎯 ETL finished. Total inserted: {inserted}")
 
 if __name__ == "__main__":
     run()
