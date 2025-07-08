@@ -50,7 +50,7 @@ try:
     logging.debug("Loaded icpsr_to_bioguide_full.json successfully")
 except FileNotFoundError:
     logging.warning("⚠️ icpsr_to_bioguide_full.json not found — House names will be unmapped")
-    NAME_TO_BIOGUIDE = {}
+    icsr_to_bioguide_full = {}
 
 
 def connect_db():
