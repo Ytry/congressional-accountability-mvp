@@ -11,7 +11,8 @@ from typing import Optional, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%((asctime)s)s [%(levelname)s] %(message)s")
+# configure logging with correct time format
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Database configuration
 DB_CONFIG = {
@@ -127,15 +128,15 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "bill_id":    data.get("bill_id", ""),
     }
 
-# Parse a single House roll call (unchanged)
+# Parse a single House roll call (placeholder)
 def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
     year = datetime.now().year
     url = HOUSE_URL.format(year=year, roll=roll)
     resp = fetch_with_retry(url)
     if not resp or not resp.content.startswith(b"<?xml"):
         return None
-    # ... your existing XML parsing logic here ...
-    return None  # placeholder
+    # insert existing XML parsing logic here
+    return None
 
 # Insert vote record
 def insert_vote(v: Dict) -> bool:
@@ -145,9 +146,8 @@ def insert_vote(v: Dict) -> bool:
         if vote_exists(cur, v["vote_id"]):
             return False
         cur.execute(
-            "INSERT INTO votes (vote_id, congress, chamber, date, question, description, result, bill_id)\n             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (v["vote_id"], v["congress"], v["chamber"], v["date"],
-             v["question"], v["description"], v["result"], v["bill_id"]) )
+            "INSERT INTO votes (vote_id, congress, chamber, date, question, description, result, bill_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (v["vote_id"], v["congress"], v["chamber"], v["date"], v["question"], v["description"], v["result"], v["bill_id"]) )
         conn.commit()
         return True
     except Exception as e:
