@@ -6,15 +6,18 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function LegislatorProfile() {
-  const { bioguideId } = useParams();
+  // pull “id” out of the URL (must match your Route path="/legislators/:id")
+  const { id } = useParams();
   const [legislator, setLegislator] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (!id) return;
+
     setLoading(true);
     axios
-      .get(`${API_URL}/api/legislators/${bioguideId}`)
+      .get(`${API_URL}/api/legislators/${id}`)
       .then(({ data }) => {
         setLegislator(data);
         setError('');
@@ -28,7 +31,7 @@ export default function LegislatorProfile() {
         );
       })
       .finally(() => setLoading(false));
-  }, [bioguideId]);
+  }, [id]);
 
   if (loading) {
     return (
@@ -64,6 +67,7 @@ export default function LegislatorProfile() {
     sponsored_bills = [],
     finance_summary = {},
     recent_votes = [],
+    bio = '',
   } = legislator;
 
   return (
@@ -75,11 +79,13 @@ export default function LegislatorProfile() {
 
       {/* Header */}
       <div className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
-        <img
-          src={portrait_url}
-          alt={`${first_name} ${last_name}`}
-          className="rounded-full w-40 h-40 object-cover shadow"
-        />
+        {portrait_url && (
+          <img
+            src={portrait_url}
+            alt={`${first_name} ${last_name}`}
+            className="rounded-full w-40 h-40 object-cover shadow"
+          />
+        )}
         <div>
           <h1 className="text-3xl font-bold">
             {first_name} {last_name}
@@ -100,12 +106,9 @@ export default function LegislatorProfile() {
         <div className="lg:col-span-2 space-y-4">
           <h2 className="text-2xl font-semibold">About</h2>
           <p>
-            {/* Placeholder: actual bio field if available */}
-            {legislator.bio ||
-              'No biographical summary available for this legislator.'}
+            {bio || 'No biographical summary available for this legislator.'}
           </p>
 
-          {/* Service history */}
           {service_history.length > 0 && (
             <div>
               <h3 className="text-xl font-semibold">Service History</h3>
@@ -122,7 +125,6 @@ export default function LegislatorProfile() {
             </div>
           )}
 
-          {/* Committees */}
           {committees.length > 0 && (
             <div>
               <h3 className="text-xl font-semibold">Committee Assignments</h3>
@@ -147,7 +149,6 @@ export default function LegislatorProfile() {
             </div>
           )}
 
-          {/* Leadership */}
           {leadership_positions.length > 0 && (
             <div>
               <h3 className="text-xl font-semibold">Leadership Positions</h3>
@@ -163,7 +164,6 @@ export default function LegislatorProfile() {
           )}
         </div>
 
-        {/* District Map Placeholder */}
         <div className="h-64 bg-gray-100 rounded shadow flex items-center justify-center">
           Map of District {district || '—'} (coming soon)
         </div>
