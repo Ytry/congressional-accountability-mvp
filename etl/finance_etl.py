@@ -1,78 +1,58 @@
-import os
+# finance_etl.py – OpenSecrets summary into campaign_finance
+import os, logging, time, requests, psycopg2, json
 from dotenv import load_dotenv
 load_dotenv()
 
-DB_CONFIG = {
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host": os.getenv("DB_HOST"),
-    "port": os.getenv("DB_PORT"),
-}
+DB  = {k: os.getenv(k) for k in ("DB_NAME","DB_USER","DB_PASSWORD","DB_HOST","DB_PORT")}
+KEY = os.getenv("OPENSECRETS_API_KEY")
+URL = "https://www.opensecrets.org/api/?method=candSummary&cid={cid}&cycle={cyc}&apikey={key}&output=json"
 
-API_KEY = os.getenv("CONGRESS_API_KEY")
+def connect(): return psycopg2.connect(**DB)
 
-import requests
-import psycopg2
-import time
+def bioguide_to_id():
+    with connect() as c, c.cursor() as cur:
+        cur.execute("SELECT id, bioguide_id FROM legislators")
+        return dict(cur.fetchall())
 
+def upsert(rows):
+    with connect() as c, c.cursor() as cur:
+        cur.executemany("""
+            INSERT INTO campaign_finance
+            (legislator_id, cycle, total_raised, total_spent,
+             top_donors, industry_breakdown)
+            VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+            ON CONFLICT (legislator_id, cycle)
+            DO UPDATE SET total_raised=EXCLUDED.total_raised,
+                          total_spent =EXCLUDED.total_spent,
+                          top_donors  =EXCLUDED.top_donors,
+                          industry_breakdown=EXCLUDED.industry_breakdown
+        """, rows); c.commit()
 
-BASE_URL = "https://www.opensecrets.org/api/"
+def fetch_summary(cid, cycle):
+    url = URL.format(cid=cid, cyc=cycle, key=KEY)
+    r = requests.get(url, timeout=20)
+    if r.status_code != 200: return None
+    attrs = r.json()["response"]["summary"]["@attributes"]
+    return {
+        "total": attrs["total"],
+        "spent": attrs["spent"],
+        "top_donors": [],            # TODO extra API calls
+        "industry_breakdown": []
+    }
 
-def get_finance_data(bioguide_id_list):
-    finance_data = []
-    for bioguide_id in bioguide_id_list:
-        params = {
-            "method": "candSummary",
-            "cid": bioguide_id,
-            "apikey": API_KEY,
-            "output": "json"
-        }
-        response = requests.get(BASE_URL, params=params)
-        if response.status_code == 200:
-            try:
-                summary = response.json().get("response", {}).get("summary", {}).get("@attributes", {})
-                finance_data.append({
-                    "bioguide_id": bioguide_id,
-                    "total": summary.get("total", "0"),
-                    "spent": summary.get("spent", "0"),
-                    "cash_on_hand": summary.get("cash_on_hand", "0"),
-                    "debt": summary.get("debt", "0"),
-                    "last_updated": summary.get("last_updated", "")
-                })
-            except Exception as e:
-                print(f"Error parsing data for {bioguide_id}: {e}")
-        time.sleep(1)  # Respect OpenSecrets API rate limits
-    return finance_data
-
-def insert_finance_data(data):
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
-
-    for entry in data:
-        cur.execute("""
-            INSERT INTO campaign_finance (bioguide_id, total, spent, cash_on_hand, debt, last_updated)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (bioguide_id) DO UPDATE SET
-                total = EXCLUDED.total,
-                spent = EXCLUDED.spent,
-                cash_on_hand = EXCLUDED.cash_on_hand,
-                debt = EXCLUDED.debt,
-                last_updated = EXCLUDED.last_updated;
-        """, (
-            entry["bioguide_id"],
-            entry["total"],
-            entry["spent"],
-            entry["cash_on_hand"],
-            entry["debt"],
-            entry["last_updated"]
-        ))
-
-    conn.commit()
-    cur.close()
-    conn.close()
+def run(cycles=(2024,2022,2020)):
+    bmap = bioguide_to_id()
+    rows=[]
+    for biog,lid in bmap.items():
+        for cyc in cycles:
+            s = fetch_summary(biog,cyc)
+            if not s: continue
+            rows.append((lid, cyc, s["total"], s["spent"],
+                         json.dumps(s["top_donors"]),
+                         json.dumps(s["industry_breakdown"])))
+            time.sleep(0.5)
+    upsert(rows)
 
 if __name__ == "__main__":
-    bioguide_ids = ["N00007360", "N00030676", "N00033395"]  # Replace with real BioGuide IDs
-    finance_data = get_finance_data(bioguide_ids)
-    insert_finance_data(finance_data)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    run()
