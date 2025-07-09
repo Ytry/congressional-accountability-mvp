@@ -10,9 +10,9 @@ export default function LegislatorCard({ legislator, size = '225x275' }) {
   // 1) Use provided HTTPS URL if valid
   // 2) Else fallback to rawcdn GitHub path (valid cert)
   const rawCdn =
-    `https://unitedstates.github.io/images/congress/${size}/${id}.jpg`;
+    `https://raw.githubusercontent.com/unitedstates/congress-legislators/main/images/congress/${size}/${id}.jpg`;
   const src = portrait_url?.startsWith('https') ? portrait_url : rawCdn;
-  
+
   return (
     <Link
       to={`/legislators/${id}`}
