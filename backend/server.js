@@ -1,30 +1,44 @@
+// server.js
+// Load environment variables from .env (ensure FRONTEND_ORIGIN is set)
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const app = express();
 
-// Middleware
-app.use(cors());
+// CORS configuration: allow only the front-end origin
+app.use(
+  cors({
+    origin: process.env.FRONTEND_ORIGIN, // e.g. https://your-frontend-domain.com
+    credentials: true,                  // if you need to send cookies/auth
+  })
+);
+
+// Middleware for JSON parsing
 app.use(express.json());
 
-// Routes
+// Route modules
 const legislatorsRoute = require('./routes/legislators');
-const votesRoute = require('./routes/votes');
-const billsRoute = require('./routes/bills');
-const financeRoute = require('./routes/finance');
-const etlRoutes = require('./routes/etl');
+const votesRoute       = require('./routes/votes');
+const billsRoute       = require('./routes/bills');
+const financeRoute     = require('./routes/finance');
+const etlRoutes        = require('./routes/etl');
+
+// Mount ETL endpoint
 app.use('/api/etl', etlRoutes);
 
+// Mount API endpoints
 app.use('/api/legislators', legislatorsRoute);
-app.use('/api/votes', votesRoute);
-app.use('/api/bills', billsRoute);
-app.use('/api/finance', financeRoute);
+app.use('/api/votes',       votesRoute);
+app.use('/api/bills',       billsRoute);
+app.use('/api/finance',     financeRoute);
 
-// Root route
+// Health check / root
 app.get('/', (req, res) => {
   res.send('Congressional Accountability API is running');
 });
 
-// Port binding for Render
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
