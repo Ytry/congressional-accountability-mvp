@@ -1,3 +1,4 @@
+```jsx
 // src/App.jsx
 import React, { Suspense, lazy, createContext } from 'react';
 import { Routes, Route, NavLink, Navigate, Outlet } from 'react-router-dom';
@@ -5,15 +6,12 @@ import { Routes, Route, NavLink, Navigate, Outlet } from 'react-router-dom';
 // Lazy‐loaded pages for code‐splitting
 const LegislatorList    = lazy(() => import('./components/LegislatorList'));
 const LegislatorProfile = lazy(() => import('./components/LegislatorProfile'));
-// Placeholder routes — create these components when you build out bills/finance features
 const BillsList         = lazy(() => import('./components/BillsList'));
 const BillDetail        = lazy(() => import('./components/BillDetail'));
 const FinanceOverview   = lazy(() => import('./components/FinanceOverview'));
 
-// API base URL from env
-export const ApiContext = createContext(
-  import.meta.env.VITE_API_URL || 'http://localhost:5000'
-);
+// Create an API‐URL context for child components to consume
+export const ApiContext = createContext(import.meta.env.VITE_API_URL);
 
 // Error boundary to catch render errors in children
 class ErrorBoundary extends React.Component {
@@ -95,22 +93,24 @@ function NotFound() {
 }
 
 export default function App() {
+  const apiBase = import.meta.env.VITE_API_URL || '';
+
   return (
-    <ApiContext.Provider value={import.meta.env.VITE_API_URL || 'http://localhost:5000'}>
+    <ApiContext.Provider value={apiBase}>
       <Routes>
         <Route path="/" element={<Layout />}>
-          {/* Redirect root to /legislators */}
+          {/* Redirect root → /legislators */}
           <Route index element={<Navigate to="legislators" replace />} />
 
-          {/* Legislators */}
+          {/* Legislator pages */}
           <Route path="legislators" element={<LegislatorList />} />
-          <Route path="legislators/:bioguideId" element={<LegislatorProfile />} />
+          <Route path="legislators/:id" element={<LegislatorProfile />} />
 
-          {/* Bills (to be implemented) */}
+          {/* Bills pages */}
           <Route path="bills" element={<BillsList />} />
           <Route path="bills/:billId" element={<BillDetail />} />
 
-          {/* Finance (to be implemented) */}
+          {/* Finance pages */}
           <Route path="finance" element={<FinanceOverview />} />
 
           {/* Catch-all */}
@@ -120,3 +120,4 @@ export default function App() {
     </ApiContext.Provider>
   );
 }
+```
