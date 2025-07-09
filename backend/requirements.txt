@@ -5,6 +5,3 @@ beautifulsoup4
 urllib3
 pyyaml
 lxml
-fastapi
-uvicorn
-psycopg2-binary
