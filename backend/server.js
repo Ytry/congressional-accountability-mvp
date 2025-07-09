@@ -1,16 +1,34 @@
 // server.js
-// Load environment variables from .env (ensure FRONTEND_ORIGIN is set)
+// Load environment variables from .env
 require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
 const app = express();
 
-// CORS configuration: allow only the front-end origin
+// Build a whitelist from your environment vars
+const allowedOrigins = [];
+if (process.env.FRONTEND_ORIGIN) {
+  allowedOrigins.push(process.env.FRONTEND_ORIGIN);
+}
+if (process.env.ADDITIONAL_ORIGINS) {
+  // e.g. add comma-separated list: "https://preview1.vercel.app,https://preview2.vercel.app"
+  allowedOrigins.push(...process.env.ADDITIONAL_ORIGINS.split(','));
+}
+
+// CORS configuration: dynamic origin check
 app.use(
   cors({
-    origin: process.env.FRONTEND_ORIGIN, // e.g. https://your-frontend-domain.com
-    credentials: true,                  // if you need to send cookies/auth
+    origin: (origin, callback) => {
+      // allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`Blocked CORS request from origin: ${origin}`);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
   })
 );
 
