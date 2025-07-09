@@ -1,71 +1,41 @@
-import os
+# committee_etl.py – scrapes congress.gov committee JSON
+import os, logging, requests, psycopg2
 from dotenv import load_dotenv
 load_dotenv()
 
-DB_CONFIG = {
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host": os.getenv("DB_HOST"),
-    "port": os.getenv("DB_PORT"),
-}
+DB = {k: os.getenv(k) for k in ("DB_NAME","DB_USER","DB_PASSWORD","DB_HOST","DB_PORT")}
+COMMITTEE_URL = "https://www.congress.gov/committee/{cong}/{type}/json"
 
-API_KEY = os.getenv("CONGRESS_API_KEY")
+def connect(): return psycopg2.connect(**DB)
 
-import requests
-import psycopg2
-from bs4 import BeautifulSoup
+def get_legislator_ids():
+    with connect() as c, c.cursor() as cur:
+        cur.execute("SELECT id, bioguide_id FROM legislators")
+        return dict(cur.fetchall())
 
+def upsert(rows):
+    with connect() as c, c.cursor() as cur:
+        cur.executemany("""
+            INSERT INTO committee_assignments
+            (legislator_id, congress, committee_name,
+             subcommittee_name, role)
+            VALUES (%s,%s,%s,%s,%s)
+            ON CONFLICT DO NOTHING
+        """, rows); c.commit()
 
-def get_committee_data():
-    house_url = "https://clerk.house.gov/committees"
-    senate_url = "https://www.senate.gov/committees/committees_home.htm"
-
-    committees = []
-
-    # House scraping
-    response = requests.get(house_url)
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for committee_div in soup.select(".committee-item"):
-            name = committee_div.find("h3").get_text(strip=True)
-            members = [li.get_text(strip=True) for li in committee_div.select("li")]
-            for member in members:
-                committees.append({
-                    "chamber": "House",
-                    "committee_name": name,
-                    "member": member
-                })
-
-    # Senate scraping
-    response = requests.get(senate_url)
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for link in soup.select("a.committee-link"):
-            name = link.get_text(strip=True)
-            committees.append({
-                "chamber": "Senate",
-                "committee_name": name,
-                "member": None  # Member data not directly listed
-            })
-
-    return committees
-
-def insert_committee_data(data):
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
-
-    for entry in data:
-        cur.execute("""
-            INSERT INTO committee_assignments (chamber, committee_name, member_name)
-            VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING;
-        """, (entry["chamber"], entry["committee_name"], entry["member"]))
-
-    conn.commit()
-    cur.close()
-    conn.close()
+def crawl(congress=118):
+    biog2id = get_legislator_ids()
+    for typ in ("house","senate"):
+        data = requests.get(COMMITTEE_URL.format(cong=congress, type=typ)).json()
+        for committee in data["committees"]:
+            cname = committee["name"]
+            for mem in committee["members"]:
+                lid = biog2id.get(mem["bioguideId"])
+                if not lid: continue
+                rows = [(lid, congress, cname,
+                         mem.get("subcommitteeName"), mem.get("role","Member"))]
+                upsert(rows)
 
 if __name__ == "__main__":
-    committee_data = get_committee_data()
-    insert_committee_data(committee_data)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    crawl()
