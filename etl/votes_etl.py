@@ -1,5 +1,5 @@
-# votes_etl.py — old-style parsing with ElementTree + BS4, new upsert target tables,
-# now looking up Bioguide→legislator_id so vote_records.legislator_id is integer
+# votes_etl.py — old-style parsing with ElementTree + BS4,
+# upsert into vote_sessions/vote_records, now with normalization of vote_cast
 
 import os
 import json
@@ -43,6 +43,22 @@ try:
 except FileNotFoundError:
     logging.warning("name_to_bioguide.json not found; Senate names will skip")
     NAME_TO_BIOGUIDE = {}
+
+# ── HELPER: NORMALIZE VOTE CAST ─────────────────────────────────────────────────
+
+def normalize_vote(raw: str) -> str:
+    s = raw.strip().lower()
+    if s in ("yea", "yes", "y", "aye"):
+        return "Yea"
+    if s in ("nay", "no", "n"):
+        return "Nay"
+    if s in ("present", "p"):
+        return "Present"
+    if s in ("not voting", "nv", "notvote"):
+        return "Not Voting"
+    if s in ("absent", "a"):
+        return "Absent"
+    return "Unknown"
 
 # ── DB HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -90,12 +106,15 @@ def upsert_vote(vote: Dict) -> bool:
             cache[biog] = row[0] if row else None
             return cache[biog]
 
-        # 3) Build and insert vote_records
+        # 3) Build and insert vote_records with normalization
         rows = []
         for rec in vote["tally"]:
             leg_id = get_leg_id(rec.get("bioguide_id"))
             if leg_id:
-                rows.append((vsid, leg_id, rec.get("position", "")))
+                raw_pos = rec.get("position", "")
+                norm_pos = normalize_vote(raw_pos)
+                rows.append((vsid, leg_id, norm_pos))
+
         if rows:
             cur.executemany(
                 "INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast) VALUES (%s,%s,%s)",
@@ -131,7 +150,7 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
 # ── PARSERS (OLD STYLE) ─────────────────────────────────────────────────────────
 
 def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    # Map 118th Congress → year; adjust if you support more sessions
+    # Map 118th Congress → year; adjust if needed
     year = 2023 if (congress==118 and session==1) else (2024 if (congress==118) else datetime.now().year)
     url  = HOUSE_URL.format(year=year, roll=roll)
     logging.info(f"🏛 HOUSE {roll}: {url}")
@@ -145,7 +164,6 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         logging.warning(f"House XML parse failed for roll {roll}: {e}")
         return None
 
-    # Extract metadata exactly as your old ETL did
     ds = root.findtext(".//action-date")
     qt = root.findtext(".//question-text")  or ""
     vd = root.findtext(".//vote-desc")       or ""
@@ -169,7 +187,6 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "tally":      [],
     }
 
-    # Pull raw recorded-vote elements
     for rec in root.findall(".//recorded-vote"):
         leg = rec.find("legislator")
         biog = leg.attrib.get("name-id") if leg is not None else None
@@ -186,7 +203,6 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    # Pull key fields from the page text
     text = soup.get_text("\n")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
@@ -262,8 +278,6 @@ def run_etl(congress: int = 118, session: int = 1):
 
         if upsert_vote(v):
             inserted += 1
-        else:
-            logging.debug(f"no insert for {v['vote_id']} (maybe duplicate or unmapped)")
         misses = 0
 
     logging.info(f"🎯 Done: inserted {inserted} votes")
