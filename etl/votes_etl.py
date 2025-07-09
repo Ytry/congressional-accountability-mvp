@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# votes_etl.py — old-style parsing (ElementTree + BS4),
-# normalized vote_cast, upsert into vote_sessions/vote_records,
-# now with CLI args for congress & session.
+# votes_etl.py — load House & Senate in separate passes so Session 2 actually inserts Senate votes
 
 import os
 import json
@@ -16,7 +14,7 @@ from typing import Dict, Optional
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-# ── CONFIGURATION ──────────────────────────────────────────────────────────────
+# ── CONFIG ──────────────────────────────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -35,10 +33,10 @@ SENATE_URL = (
 )
 
 MAX_RETRIES            = 3
-RETRY_DELAY            = 0.5   # seconds
-MAX_CONSECUTIVE_MISSES = 10
+RETRY_DELAY            = 0.5       # seconds
+MAX_CONSECUTIVE_MISSES = 10        # stop after this many empty rolls
 
-# Load Name→Bioguide map for Senate
+# Load Name→Bioguide map for Senate lookups
 try:
     with open("name_to_bioguide.json") as f:
         NAME_TO_BIOGUIDE = json.load(f)
@@ -50,33 +48,29 @@ except FileNotFoundError:
 
 def normalize_vote(raw: str) -> str:
     s = raw.strip().lower()
-    if s in ("yea", "yes", "y", "aye"):       return "Yea"
-    if s in ("nay", "no", "n"):               return "Nay"
-    if s in ("present", "p"):                 return "Present"
-    if s in ("not voting", "nv", "notvote"):  return "Not Voting"
-    if s in ("absent", "a"):                  return "Absent"
+    if s in ("yea","yes","y","aye"):       return "Yea"
+    if s in ("nay","no","n"):              return "Nay"
+    if s in ("present","p"):               return "Present"
+    if s in ("not voting","nv","notvote"): return "Not Voting"
+    if s in ("absent","a"):                return "Absent"
     return "Unknown"
 
 def connect_db():
     return psycopg2.connect(**DB)
 
-def vote_exists(cur, vote_id: str) -> bool:
-    cur.execute("SELECT 1 FROM vote_sessions WHERE vote_id = %s", (vote_id,))
-    return cur.fetchone() is not None
-
 def upsert_vote(vote: Dict) -> bool:
-    conn = connect_db(); cur = conn.cursor()
+    """Insert vote session + records; skip if already exists."""
+    conn = connect_db()
+    cur  = conn.cursor()
     try:
-        if vote_exists(cur, vote["vote_id"]):
-            return False
-
-        # 1) Insert vote_sessions
+        # session insert (ON CONFLICT so repeat runs won’t error)
         cur.execute(
             """
             INSERT INTO vote_sessions
-              (vote_id, congress, chamber, date, question,
-               description, result, bill_id)
+               (vote_id, congress, chamber, date, question,
+                description, result, bill_id)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (vote_id) DO NOTHING
             RETURNING id
             """,
             (
@@ -84,9 +78,12 @@ def upsert_vote(vote: Dict) -> bool:
                 vote["question"], vote["description"], vote["result"], vote["bill_id"]
             )
         )
-        vsid = cur.fetchone()[0]
+        row = cur.fetchone()
+        if not row:
+            return False
+        vsid = row[0]
 
-        # 2) Resolve Bioguide → legislator_id
+        # build & insert individual vote_records
         cache: Dict[str,Optional[int]] = {}
         def leg_id(biog: Optional[str]) -> Optional[int]:
             if not biog:
@@ -94,25 +91,25 @@ def upsert_vote(vote: Dict) -> bool:
             if biog in cache:
                 return cache[biog]
             cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (biog,))
-            row = cur.fetchone()
-            cache[biog] = row[0] if row else None
+            r = cur.fetchone()
+            cache[biog] = r[0] if r else None
             return cache[biog]
 
-        # 3) Build vote_records with normalized vote_cast
-        rows = []
+        records = []
         for rec in vote["tally"]:
-            lid = leg_id(rec.get("bioguide_id"))
+            lid = leg_id(rec["bioguide_id"])
             if lid:
-                rows.append((vsid, lid, normalize_vote(rec.get("position",""))))
+                records.append((vsid, lid, normalize_vote(rec["position"])))
 
-        if rows:
+        if records:
             cur.executemany(
-                "INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast) VALUES (%s,%s,%s)",
-                rows
+                "INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast) "
+                "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                records
             )
 
         conn.commit()
-        logging.info(f"✅ {vote['vote_id']} (+{len(rows)} positions)")
+        logging.info(f"✅ {vote['vote_id']} (+{len(records)} positions)")
         return True
 
     except Exception as e:
@@ -121,49 +118,45 @@ def upsert_vote(vote: Dict) -> bool:
         return False
 
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
     for i in range(1, MAX_RETRIES+1):
         try:
             r = requests.get(url, timeout=10)
+            # skip the “vote-not-available” placeholder
             if r.status_code == 200 and "vote-not-available" not in r.url:
                 return r
-        except Exception as e:
-            logging.debug(f"Retry {i} failed for {url}: {e}")
+        except Exception:
+            pass
         time.sleep(RETRY_DELAY)
     return None
 
 # ── PARSERS ─────────────────────────────────────────────────────────────────────
 
-def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    # Map session→year for House (118-1 → 2023, 118-2 → 2024)
+def parse_house(congress: int, session: int, roll: int) -> Optional[Dict]:
+    # map 118-1→2023, 118-2→2024
     if congress == 118:
         year = 2023 if session == 1 else 2024
     else:
         year = datetime.now().year
 
-    url = HOUSE_URL.format(year=year, roll=roll)
+    url  = HOUSE_URL.format(year=year, roll=roll)
     logging.info(f"🏛 HOUSE {roll}: {url}")
     resp = fetch_with_retry(url)
-    if not resp or not resp.content.strip().startswith(b"<?xml"):
+    if not resp or not resp.content.lstrip().startswith(b"<?xml"):
         return None
 
     try:
         root = ET.fromstring(resp.content)
     except Exception as e:
-        logging.warning(f"House XML parse failed for roll {roll}: {e}")
+        logging.warning(f"XML parse failed on House roll {roll}: {e}")
         return None
 
-    # Extract exactly as original ETL
-    ds = root.findtext(".//action-date")
-    qt = root.findtext(".//question-text") or ""
-    vd = root.findtext(".//vote-desc")      or ""
-    vr = root.findtext(".//vote-result")    or ""
-    bn = root.findtext(".//legis-num")      or ""
-
+    ds = root.findtext(".//action-date") or ""
     try:
-        vote_date = datetime.strptime(ds, "%d-%b-%Y")
+        date = datetime.strptime(ds, "%d-%b-%Y")
     except Exception:
         return None
 
@@ -171,48 +164,50 @@ def parse_house_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "vote_id":    f"house-{congress}-{session}-{roll}",
         "congress":   congress,
         "chamber":    "house",
-        "date":       vote_date,
-        "question":   qt,
-        "description":vd,
-        "result":     vr,
-        "bill_id":    bn,
+        "date":       date,
+        "question":   root.findtext(".//question-text", default=""),
+        "description":root.findtext(".//vote-desc",      default=""),
+        "result":     root.findtext(".//vote-result",    default=""),
+        "bill_id":    root.findtext(".//legis-num",      default=None),
         "tally":      [],
     }
-
     for rec in root.findall(".//recorded-vote"):
         leg = rec.find("legislator")
         biog = leg.attrib.get("name-id") if leg is not None else None
-        pos  = rec.findtext("vote") or ""
+        pos  = rec.findtext("vote", default="")
         vote["tally"].append({"bioguide_id": biog, "position": pos})
 
     return vote
 
-def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
-    url = SENATE_URL.format(congress=congress, session=session, roll=roll)
+def parse_senate(congress: int, session: int, roll: int) -> Optional[Dict]:
+    url  = SENATE_URL.format(congress=congress, session=session, roll=roll)
     logging.info(f"🏛 SENATE {roll}: {url}")
     resp = fetch_with_retry(url)
     if not resp:
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    table = soup.find("table", class_="roll_call") \
-         or max(soup.find_all("table"), key=lambda t: len(t.find_all("tr")), default=None)
+    table = (
+        soup.find("table", class_="roll_call")
+        or max(soup.find_all("table"), key=lambda t: len(t.find_all("tr")), default=None)
+    )
     if not table:
         return None
 
-    vid = f"senate-{congress}-{session}-{roll}"
-    tally = []
+    vid    = f"senate-{congress}-{session}-{roll}"
+    tally  = []
     for tr in table.find_all("tr")[1:]:
         cols = tr.find_all("td")
         if len(cols) < 2:
             continue
-        raw_name = cols[0].get_text(strip=True)
-        pos      = cols[1].get_text(strip=True)
-        if "," in raw_name:
-            last, first = [s.strip() for s in raw_name.split(",",1)]
+        raw = cols[0].get_text(strip=True)
+        pos = cols[1].get_text(strip=True)
+        # normalize "Last, First" → "First Last"
+        if "," in raw:
+            last, first = [x.strip() for x in raw.split(",", 1)]
             name = f"{first} {last}"
         else:
-            name = raw_name
+            name = raw
         biog = NAME_TO_BIOGUIDE.get(name)
         tally.append({"bioguide_id": biog, "position": pos})
 
@@ -220,7 +215,7 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
         "vote_id":    vid,
         "congress":   congress,
         "chamber":    "senate",
-        "date":       datetime.now(),  # Senate metadata parsing can be added
+        "date":       datetime.now(),  # metadata parsing can be added
         "question":   "",
         "description":"",
         "result":     "",
@@ -230,36 +225,35 @@ def parse_senate_vote(congress: int, session: int, roll: int) -> Optional[Dict]:
 
 # ── DRIVER ─────────────────────────────────────────────────────────────────────
 
-def run_etl(congress: int = 118, session: int = 1):
-    logging.info(f"🚀 Starting vote ETL for Congress {congress}, Session {session}")
+def run_chamber(name: str, parser, congress: int, session: int):
+    logging.info(f"🚀 Loading {name.upper()} votes for {congress}-{session}")
     inserted = 0
     misses   = 0
+    roll     = 1
 
-    for roll in range(1, 3000):
-        if misses >= MAX_CONSECUTIVE_MISSES:
-            break
-
-        v = parse_house_vote(congress, session, roll) \
-            or parse_senate_vote(congress, session, roll)
-
-        if not v:
+    while misses < MAX_CONSECUTIVE_MISSES:
+        vote = parser(congress, session, roll)
+        if vote and vote["tally"]:
+            if upsert_vote(vote):
+                inserted += 1
+            misses = 0
+        else:
             misses += 1
-            logging.debug(f"📭 miss {misses} at roll {roll}")
-            continue
+            logging.debug(f"📭 no {name} vote at roll {roll} (miss {misses})")
+        roll += 1
 
-        if upsert_vote(v):
-            inserted += 1
-        misses = 0
+    logging.info(f"🏁 {name.capitalize()} done: inserted {inserted} sessions\n")
 
-    logging.info(f"🎯 Done: inserted {inserted} sessions")
+def main():
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("congress", type=int, nargs="?", default=118)
+    p.add_argument("session", type=int, nargs="?", default=1)
+    args = p.parse_args()
+
+    # Run House first, then Senate
+    run_chamber("house", parse_house,  args.congress, args.session)
+    run_chamber("senate", parse_senate, args.congress, args.session)
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="ETL roll-call votes into Postgres")
-    parser.add_argument("congress", type=int, nargs="?", default=118,
-                        help="Congress number (e.g. 118)")
-    parser.add_argument("session", type=int, nargs="?", default=1,
-                        help="Session number (1 or 2)")
-    args = parser.parse_args()
-
-    run_etl(args.congress, args.session)
+    main()
