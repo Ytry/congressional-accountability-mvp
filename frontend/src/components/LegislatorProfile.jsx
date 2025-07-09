@@ -13,17 +13,28 @@ export default function LegislatorProfile() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!id) return;
+    console.log('[Profile] useParams bioguideId =', id);
+
+    if (!id) {
+      console.error('[Profile] No legislator ID found in route params');
+      setError('Invalid legislator ID');
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     axios
       .get(`${API_URL}/api/legislators/${id}`)
       .then(({ data }) => {
+        console.log('[Profile] Loaded data for legislator:', data);
+        if (!data || Object.keys(data).length === 0) {
+          throw new Error('Empty legislator data');
+        }
         setLegislator(data);
         setError('');
       })
       .catch(err => {
-        console.error(err);
+        console.error('[Profile] Error fetching legislator:', err);
         setError(
           err.response?.status === 404
             ? 'Legislator not found.'
@@ -34,15 +45,7 @@ export default function LegislatorProfile() {
   }, [id]);
 
   if (loading) {
-    return (
-      <div className="p-4 animate-pulse">
-        <div className="h-6 bg-gray-300 mb-4 rounded w-1/3"></div>
-        <div className="h-64 bg-gray-200 rounded mb-6"></div>
-        {[...Array(4)].map((_, i) => (
-          <div key={i} className="h-4 bg-gray-200 rounded mb-2"></div>
-        ))}
-      </div>
-    );
+    return <div className="p-6 text-gray-500">Loading...</div>;
   }
 
   if (error) {
@@ -50,6 +53,19 @@ export default function LegislatorProfile() {
       <div className="p-6 text-center">
         <h2 className="text-2xl font-bold text-red-600 mb-4">Error</h2>
         <p className="text-lg">{error}</p>
+        <Link to="/legislators" className="text-blue-600 hover:underline mt-4 block">
+          ← Back to all legislators
+        </Link>
+      </div>
+    );
+  }
+
+  if (!legislator || !legislator.first_name || !legislator.last_name) {
+    console.warn('[Profile] Incomplete legislator data:', legislator);
+    return (
+      <div className="p-6 text-center">
+        <h2 className="text-2xl font-bold text-yellow-600 mb-4">Incomplete Data</h2>
+        <p className="text-lg">The legislator's information appears to be incomplete.</p>
         <Link to="/legislators" className="text-blue-600 hover:underline mt-4 block">
           ← Back to all legislators
         </Link>
@@ -83,12 +99,16 @@ export default function LegislatorProfile() {
       </Link>
 
       <header className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
-        {portrait_url && (
+        {portrait_url ? (
           <img
             src={portrait_url}
             alt={`${first_name} ${last_name}`}
             className="rounded-full w-40 h-40 object-cover shadow"
           />
+        ) : (
+          <div className="w-40 h-40 bg-gray-300 rounded-full flex items-center justify-center text-gray-600">
+            No Image
+          </div>
         )}
         <div>
           <h1 className="text-3xl font-bold">
@@ -100,7 +120,7 @@ export default function LegislatorProfile() {
           </p>
           <p className="text-sm text-gray-500 mt-1">
             Serving {start_year}
-            {end_year ? `–${end_year}` : '–present'} in the {chamber.toUpperCase()}
+            {end_year ? `–${end_year}` : '–present'} in the {chamber?.toUpperCase()}
           </p>
         </div>
       </header>
@@ -109,13 +129,14 @@ export default function LegislatorProfile() {
         <h2 className="text-2xl font-semibold">About</h2>
         <p>{bio || 'No biographical summary available.'}</p>
 
-        {service_history.length > 0 && (
+        {Array.isArray(service_history) && service_history.length > 0 && (
           <>
             <h3 className="text-xl font-semibold">Service History</h3>
             <ul className="list-disc list-inside">
               {service_history.map((term, i) => (
                 <li key={i}>
-                  {term.chamber.charAt(0).toUpperCase() + term.chamber.slice(1)} ({term.start_date}
+                  {term.chamber?.charAt(0).toUpperCase() + term.chamber?.slice(1)} (
+                  {term.start_date}
                   {term.end_date ? `–${term.end_date}` : '–present'})
                 </li>
               ))}
@@ -123,7 +144,7 @@ export default function LegislatorProfile() {
           </>
         )}
 
-        {committees.length > 0 && (
+        {Array.isArray(committees) && committees.length > 0 && (
           <>
             <h3 className="text-xl font-semibold">Committee Assignments</h3>
             <table className="w-full text-left border-collapse">
@@ -147,13 +168,14 @@ export default function LegislatorProfile() {
           </>
         )}
 
-        {leadership_positions.length > 0 && (
+        {Array.isArray(leadership_positions) && leadership_positions.length > 0 && (
           <>
             <h3 className="text-xl font-semibold">Leadership Positions</h3>
             <ul className="list-disc list-inside">
               {leadership_positions.map((pos, i) => (
                 <li key={i}>
-                  {pos.title} ({pos.start_date}{pos.end_date ? `–${pos.end_date}` : '–present'})
+                  {pos.title} ({pos.start_date}
+                  {pos.end_date ? `–${pos.end_date}` : '–present'})
                 </li>
               ))}
             </ul>
@@ -163,7 +185,7 @@ export default function LegislatorProfile() {
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold">Sponsored Bills</h2>
-        {sponsored_bills.length ? (
+        {Array.isArray(sponsored_bills) && sponsored_bills.length ? (
           <ul className="list-disc list-inside">
             {sponsored_bills.map(b => (
               <li key={b.bill_id}>
@@ -188,9 +210,7 @@ export default function LegislatorProfile() {
               <p className="text-xl">
                 ${finance_summary.total_contributions.toLocaleString()}
               </p>
-              <p className="text-sm text-gray-600">
-                Cycle: {finance_summary.cycle}
-              </p>
+              <p className="text-sm text-gray-600">Cycle: {finance_summary.cycle}</p>
             </div>
             <div className="border rounded p-4 shadow-sm">
               <h3 className="font-semibold">Top Industries</h3>
@@ -210,7 +230,7 @@ export default function LegislatorProfile() {
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold">Recent Votes</h2>
-        {recent_votes.length ? (
+        {Array.isArray(recent_votes) && recent_votes.length ? (
           <table className="w-full text-left border-collapse">
             <thead>
               <tr>
