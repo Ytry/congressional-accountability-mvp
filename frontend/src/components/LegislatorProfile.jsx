@@ -6,7 +6,7 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function LegislatorProfile() {
-  const { bioguideId: id } = useParams();
+  const { id } = useParams();
 
   const [legislator, setLegislator] = useState(null);
   const [loading, setLoading] = useState(true);
