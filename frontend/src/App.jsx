@@ -1,4 +1,4 @@
-```jsx
+
 // src/App.jsx
 import React, { Suspense, lazy, createContext } from 'react';
 import { Routes, Route, NavLink, Navigate, Outlet } from 'react-router-dom';
@@ -120,4 +120,3 @@ export default function App() {
     </ApiContext.Provider>
   );
 }
-```
