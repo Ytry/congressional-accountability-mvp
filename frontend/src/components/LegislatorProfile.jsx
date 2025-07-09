@@ -6,15 +6,15 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function LegislatorProfile() {
-  // ← pull “id” from the route param (must match <Route path="/legislators/:id" …>)
-  const { id } = useParams();
+  // Option B: pull `bioguideId` from the route param and alias to `id`
+  const { bioguideId: id } = useParams();
 
   const [legislator, setLegislator] = useState(null);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!id) return;           // guard against undefined
+    if (!id) return; // guard against undefined
 
     setLoading(true);
     axios
@@ -71,7 +71,7 @@ export default function LegislatorProfile() {
 
   return (
     <div className="space-y-8 p-6">
-      <Link to="/" className="text-blue-600 hover:underline">
+      <Link to="/legislators" className="text-blue-600 hover:underline">
         ← Back to all legislators
       </Link>
 
@@ -93,8 +93,7 @@ export default function LegislatorProfile() {
           </p>
           <p className="text-sm text-gray-500 mt-1">
             Serving {start_year}
-            {end_year ? `–${end_year}` : '–present'} in the{' '}
-            {chamber.toUpperCase()}
+            {end_year ? `–${end_year}` : '–present'} in the {chamber.toUpperCase()}
           </p>
         </div>
       </header>
@@ -109,8 +108,7 @@ export default function LegislatorProfile() {
             <ul className="list-disc list-inside">
               {service_history.map((term, i) => (
                 <li key={i}>
-                  {term.chamber.charAt(0).toUpperCase() + term.chamber.slice(1)}{' '}
-                  ({term.start_date}
+                  {term.chamber.charAt(0).toUpperCase() + term.chamber.slice(1)} ({term.start_date}
                   {term.end_date ? `–${term.end_date}` : '–present'})
                 </li>
               ))}
@@ -148,14 +146,15 @@ export default function LegislatorProfile() {
             <ul className="list-disc list-inside">
               {leadership_positions.map((pos, i) => (
                 <li key={i}>
-                  {pos.title} ({pos.start_date}
-                  {pos.end_date ? `–${pos.end_date}` : '–present'})
+                  {pos.title} ({pos.start_date}{pos.end_date ? `–${pos.end_date}` : '–present'})
                 </li>
               ))}
             </ul>
           </>
         )}
       </section>
+
+      {/* ... Sponsored Bills, Finance, Recent Votes sections unchanged ... */}
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold">Sponsored Bills</h2>
