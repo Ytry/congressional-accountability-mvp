@@ -6,7 +6,6 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function LegislatorProfile() {
-  // Option B: pull `bioguideId` from the route param and alias to `id`
   const { bioguideId: id } = useParams();
 
   const [legislator, setLegislator] = useState(null);
@@ -14,7 +13,7 @@ export default function LegislatorProfile() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!id) return; // guard against undefined
+    if (!id) return;
 
     setLoading(true);
     axios
@@ -47,7 +46,15 @@ export default function LegislatorProfile() {
   }
 
   if (error) {
-    return <p className="p-4 text-red-600">{error}</p>;
+    return (
+      <div className="p-6 text-center">
+        <h2 className="text-2xl font-bold text-red-600 mb-4">Error</h2>
+        <p className="text-lg">{error}</p>
+        <Link to="/legislators" className="text-blue-600 hover:underline mt-4 block">
+          ← Back to all legislators
+        </Link>
+      </div>
+    );
   }
 
   const {
@@ -154,18 +161,13 @@ export default function LegislatorProfile() {
         )}
       </section>
 
-      {/* ... Sponsored Bills, Finance, Recent Votes sections unchanged ... */}
-
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold">Sponsored Bills</h2>
         {sponsored_bills.length ? (
           <ul className="list-disc list-inside">
             {sponsored_bills.map(b => (
               <li key={b.bill_id}>
-                <Link
-                  to={`/bills/${b.bill_id}`}
-                  className="text-blue-600 hover:underline"
-                >
+                <Link to={`/bills/${b.bill_id}`} className="text-blue-600 hover:underline">
                   {b.bill_id}: {b.title}
                 </Link>{' '}
                 ({b.date}, {b.status})
