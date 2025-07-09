@@ -1,4 +1,3 @@
-
 // src/App.jsx
 import React, { Suspense, lazy, createContext } from 'react';
 import { Routes, Route, NavLink, Navigate, Outlet } from 'react-router-dom';
@@ -104,7 +103,7 @@ export default function App() {
 
           {/* Legislator pages */}
           <Route path="legislators" element={<LegislatorList />} />
-          <Route path="legislators/:id" element={<LegislatorProfile />} />
+          <Route path="legislators/:bioguideId" element={<LegislatorProfile />} />
 
           {/* Bills pages */}
           <Route path="bills" element={<BillsList />} />
