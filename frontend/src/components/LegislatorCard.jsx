@@ -3,15 +3,16 @@ import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
 
+/**
+ * Displays a single legislator card with a secure image from the
+ * GitHub repo (valid SSL), plus a local placeholder fallback.
+ */
 export default function LegislatorCard({ legislator, size = '225x275' }) {
-  const { bioguide_id: id, full_name: name, party, state, portrait_url } = legislator;
+  const { bioguide_id: id, full_name: name, party, state } = legislator;
   const [loaded, setLoaded] = useState(false);
 
-  // 1) Use provided HTTPS URL if valid
-  // 2) Else fallback to rawcdn GitHub path (valid cert)
-  const rawCdn =
-    `https://raw.githubusercontent.com/unitedstates/congress-legislators/main/images/congress/${size}/${id}.jpg`;
-  const src = portrait_url?.startsWith('https') ? portrait_url : rawCdn;
+  // Always use the GitHub repo images (valid Cloudflare SSL)
+  const src = `https://raw.githubusercontent.com/unitedstates/congress-legislators/main/images/congress/${size}/${id}.jpg`;
 
   return (
     <Link
@@ -27,7 +28,7 @@ export default function LegislatorCard({ legislator, size = '225x275' }) {
             loaded ? 'opacity-100' : 'opacity-0'
           }`}
           onLoad={() => setLoaded(true)}
-          onError={e => {
+          onError={(e) => {
             e.currentTarget.onerror = null;
             e.currentTarget.src = '/placeholder-portrait.png';
           }}
@@ -52,7 +53,6 @@ LegislatorCard.propTypes = {
     full_name:   PropTypes.string.isRequired,
     party:       PropTypes.string,
     state:       PropTypes.string,
-    portrait_url: PropTypes.string,
   }).isRequired,
   size: PropTypes.oneOf(['225x275', '450x550', 'original']),
 };
