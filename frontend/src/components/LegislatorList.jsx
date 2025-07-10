@@ -1,66 +1,75 @@
-// src/components/LegislatorList.jsx
-import React, { useState, useEffect, useContext } from 'react';
-import { ApiContext } from '../App';
-import LegislatorCard from './LegislatorCard';
+import React, { useState, useEffect, useContext } from 'react'
+import { ApiContext } from '../App'
+import LegislatorCard from './LegislatorCard'
 
-const PAGE_SIZE = 24;
+// Custom debounce hook
+function useDebounce(value, delay = 500) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay)
+    return () => clearTimeout(handler)
+  }, [value, delay])
+  return debouncedValue
+}
+
+const PAGE_SIZE = 24
 const PARTIES = [
   { label: 'All Parties', value: '' },
   { label: 'Democrat', value: 'D' },
   { label: 'Republican', value: 'R' },
   { label: 'Independent', value: 'I' },
-];
+]
 const STATES = [
   '', 'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','IA','ID','IL','IN',
   'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM',
   'NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA',
   'WV','WI','WY','DC',
-];
+]
 
 export default function LegislatorList() {
-  const API_URL = useContext(ApiContext);
-  const [legislators, setLegislators] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [page, setPage] = useState(1);
+  const API_URL = useContext(ApiContext)
+  const [legislators, setLegislators] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [page, setPage] = useState(1)
 
-  // filters
-  const [query, setQuery] = useState('');
-  const [party, setParty] = useState('');
-  const [stateFilter, setStateFilter] = useState('');
+  // Filters
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebounce(query, 500)
+  const [party, setParty] = useState('')
+  const [stateFilter, setStateFilter] = useState('')
 
-  // fetch data whenever page or filters change
   useEffect(() => {
     async function fetchLegislators() {
-      setLoading(true);
-      setError('');
+      setLoading(true)
+      setError('')
       try {
-        const params = new URLSearchParams();
-        params.set('page', page);
-        params.set('pageSize', PAGE_SIZE);
-        if (query) params.set('query', query);
-        if (party) params.set('party', party);
-        if (stateFilter) params.set('state', stateFilter);
+        const params = new URLSearchParams()
+        params.set('page', page)
+        params.set('pageSize', PAGE_SIZE)
+        if (debouncedQuery) params.set('query', debouncedQuery)
+        if (party) params.set('party', party)
+        if (stateFilter) params.set('state', stateFilter)
 
-        const res = await fetch(`${API_URL}/api/legislators?${params.toString()}`);
-        if (!res.ok) throw new Error(`Server responded ${res.status}`);
-        const data = await res.json();
-        setLegislators(data);
+        const res = await fetch(`${API_URL}/api/legislators?${params.toString()}`)
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        const data = await res.json()
+        setLegislators(data)
       } catch (err) {
-        setError(err.message);
+        setError(err.message)
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
     }
-    fetchLegislators();
-  }, [API_URL, page, query, party, stateFilter]);
+    fetchLegislators()
+  }, [API_URL, page, debouncedQuery, party, stateFilter])
 
   const handleReset = () => {
-    setQuery('');
-    setParty('');
-    setStateFilter('');
-    setPage(1);
-  };
+    setQuery('')
+    setParty('')
+    setStateFilter('')
+    setPage(1)
+  }
 
   return (
     <div className="space-y-6">
@@ -109,7 +118,7 @@ export default function LegislatorList() {
 
         <div className="flex gap-2">
           <button
-            onClick={() => { setPage(1); }}
+            onClick={() => setPage(1)}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
           >
             Apply
@@ -169,5 +178,5 @@ export default function LegislatorList() {
         </button>
       </div>
     </div>
-);
+  )
 }
