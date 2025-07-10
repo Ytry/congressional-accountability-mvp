@@ -28,12 +28,17 @@ const STATES = [
 
 export default function LegislatorList() {
   const API_URL = useContext(ApiContext)
+
+  // list + pagination
   const [legislators, setLegislators] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [totalCount, setTotalCount] = useState(0)
   const [page, setPage] = useState(1)
 
-  // Filters
+  // loading / error
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  // filters
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebounce(query, 500)
   const [party, setParty] = useState('')
@@ -45,35 +50,36 @@ export default function LegislatorList() {
     async function fetchLegislators() {
       setLoading(true)
       setError('')
+
       try {
-        const params = new URLSearchParams()
-        params.set('page', page)
-        params.set('pageSize', PAGE_SIZE)
+        const params = new URLSearchParams({
+          page: page.toString(),
+          pageSize: PAGE_SIZE.toString(),
+        })
         if (debouncedQuery) params.set('query', debouncedQuery)
-        if (party) params.set('party', party)
-        if (stateFilter) params.set('state', stateFilter)
+        if (party)         params.set('party', party)
+        if (stateFilter)   params.set('state', stateFilter)
 
         const res = await fetch(
           `${API_URL}/api/legislators?${params.toString()}`,
           { signal: controller.signal }
         )
         if (!res.ok) throw new Error(`Server responded ${res.status}`)
+
         const data = await res.json()
-        setLegislators(data)
+
+        // ─── FIX: pull out the array from data.items ───────────────────────────
+        setLegislators(data.items)
+        setTotalCount(data.totalCount)
       } catch (err) {
-        if (err.name !== 'AbortError') {
-          setError(err.message)
-        }
+        if (err.name !== 'AbortError') setError(err.message)
       } finally {
         setLoading(false)
       }
     }
 
     fetchLegislators()
-
-    return () => {
-      controller.abort()
-    }
+    return () => controller.abort()
   }, [API_URL, page, debouncedQuery, party, stateFilter])
 
   const handleReset = () => {
@@ -85,7 +91,7 @@ export default function LegislatorList() {
 
   return (
     <div className="space-y-6">
-      {/* Search & Filters */}
+      {/* ─── Search & Filters ─────────────────────────────────────────────────── */}
       <div className="flex flex-wrap gap-3 items-end">
         <div className="flex-1 min-w-[200px]">
           <label className="block text-sm font-medium mb-1">Search Name</label>
@@ -144,13 +150,9 @@ export default function LegislatorList() {
         </div>
       </div>
 
-      {/* Results */}
-      {loading && (
-        <p className="text-center text-gray-500">Loading legislators…</p>
-      )}
-      {error && (
-        <p className="text-center text-red-600">Error: {error}</p>
-      )}
+      {/* ─── Results & States ────────────────────────────────────────────────── */}
+      {loading && <p className="text-center text-gray-500">Loading legislators…</p>}
+      {error   && <p className="text-center text-red-600">Error: {error}</p>}
       {!loading && !error && legislators.length === 0 && (
         <p className="text-center text-gray-600">No legislators found.</p>
       )}
@@ -161,27 +163,27 @@ export default function LegislatorList() {
         ))}
       </div>
 
-      {/* Pagination */}
+      {/* ─── Pagination ───────────────────────────────────────────────────────── */}
       <div className="flex justify-center items-center gap-4 py-4">
         <button
           onClick={() => setPage(p => Math.max(1, p - 1))}
           disabled={page === 1}
           className={`px-4 py-2 rounded border ${
-            page === 1
-              ? 'opacity-50 cursor-not-allowed'
-              : 'hover:bg-gray-100'
+            page === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100'
           }`}
         >
           ← Prev
         </button>
+
         <span className="text-sm text-gray-700">
-          Page {page}
+          Page {page} of {Math.ceil(totalCount / PAGE_SIZE)}
         </span>
+
         <button
           onClick={() => setPage(p => p + 1)}
-          disabled={legislators.length < PAGE_SIZE}
+          disabled={page * PAGE_SIZE >= totalCount}
           className={`px-4 py-2 rounded border ${
-            legislators.length < PAGE_SIZE
+            page * PAGE_SIZE >= totalCount
               ? 'opacity-50 cursor-not-allowed'
               : 'hover:bg-gray-100'
           }`}
