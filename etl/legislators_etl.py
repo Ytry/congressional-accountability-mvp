@@ -9,6 +9,7 @@ from typing import Optional, List
 import requests
 import yaml
 import psycopg2
+import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
 from dotenv import load_dotenv
