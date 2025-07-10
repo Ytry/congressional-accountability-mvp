@@ -1,135 +1,195 @@
-const express = require('express');
-const router = express.Router();
-const db = require('../db');
+import React, { useState, useEffect, useContext } from 'react'
+import { ApiContext } from '../App'
+import LegislatorCard from './LegislatorCard'
 
-// GET all legislators with pagination
-router.get('/', async (req, res) => {
-  // Parse pagination params with defaults
-  const page = parseInt(req.query.page, 10) || 1;
-  const pageSize = parseInt(req.query.pageSize, 10) || 24;
-  const offset = (page - 1) * pageSize;
+// Custom debounce hook
+function useDebounce(value, delay = 500) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay)
+    return () => clearTimeout(handler)
+  }, [value, delay])
+  return debouncedValue
+}
 
-  try {
-    // Total count for pagination metadata
-    const countRes = await db.query('SELECT COUNT(*) FROM legislators');
-    const totalCount = parseInt(countRes.rows[0].count, 10);
+const PAGE_SIZE = 24
+const PARTIES = [
+  { label: 'All Parties', value: '' },
+  { label: 'Democrat', value: 'D' },
+  { label: 'Republican', value: 'R' },
+  { label: 'Independent', value: 'I' },
+]
+const STATES = [
+  '', 'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','IA','ID','IL','IN',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM',
+  'NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA',
+  'WV','WI','WY','DC',
+]
 
-    // Page slice of legislators
-    const result = await db.query(
-      `
-      SELECT
-        bioguide_id,
-        full_name,
-        party,
-        state,
-        district,
-        chamber,
-        portrait_url,
-        official_website_url,
-        office_contact,
-        bio_snapshot
-      FROM legislators
-      ORDER BY state, district NULLS LAST
-      LIMIT $1 OFFSET $2
-      `,
-      [pageSize, offset]
-    );
+export default function LegislatorList() {
+  const API_URL = useContext(ApiContext)
+  const [legislators, setLegislators] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
 
-    // Include pagination metadata
-    res.set('X-Total-Count', totalCount);
-    return res.status(200).json({
-      items: result.rows,
-      totalCount,
-      page,
-      pageSize
-    });
-  } catch (err) {
-    console.error('Error fetching legislators with pagination:', err);
-    return res.status(500).json({ error: 'Failed to fetch legislators' });
-  }
-});
+  // Filters
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebounce(query, 500)
+  const [party, setParty] = useState('')
+  const [stateFilter, setStateFilter] = useState('')
 
-// GET a single legislator by BioGuide ID
-router.get('/:bioguide_id', async (req, res) => {
-  const { bioguide_id } = req.params;
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchLegislators = async () => {
+      setLoading(true)
+      setError('')
+      try {
+        const params = new URLSearchParams()
+        params.set('page', page)
+        params.set('pageSize', PAGE_SIZE)
+        if (debouncedQuery) params.set('query', debouncedQuery)
+        if (party) params.set('party', party)
+        if (stateFilter) params.set('state', stateFilter)
 
-  try {
-    const legislatorResult = await db.query(
-      `
-      SELECT *
-      FROM legislators
-      WHERE bioguide_id = $1
-      `,
-      [bioguide_id]
-    );
-
-    if (legislatorResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Legislator not found' });
+        const res = await fetch(
+          `${API_URL}/api/legislators?${params.toString()}`,
+          { signal: controller.signal }
+        )
+        if (!res.ok) throw new Error(`Server responded ${res.status}`)
+        const json = await res.json()
+        // API now returns { items, totalCount, page, pageSize }
+        setLegislators(json.items)
+        setTotalCount(json.totalCount)
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setError(err.message)
+        }
+      } finally {
+        setLoading(false)
+      }
     }
 
-    const legislator = legislatorResult.rows[0];
+    fetchLegislators()
+    return () => controller.abort()
+  }, [API_URL, page, debouncedQuery, party, stateFilter])
 
-    // Fetch committees
-    const committeesResult = await db.query(
-      `
-      SELECT committee_name, role
-      FROM committee_assignments
-      WHERE bioguide_id = $1
-      `,
-      [bioguide_id]
-    );
-    legislator.committees = committeesResult.rows;
-
-    // Fetch votes
-    const votesResult = await db.query(
-      `
-      SELECT
-        v.bill_number,
-        v.question_text,
-        v.vote_result,
-        v.vote_description,
-        v.date,
-        mv.member_vote_position
-      FROM member_votes mv
-      JOIN votes v ON mv.vote_id = v.vote_id
-      WHERE mv.bioguide_id = $1
-      ORDER BY v.date DESC
-      LIMIT 20
-      `,
-      [bioguide_id]
-    );
-    legislator.voting_record = votesResult.rows;
-
-    // Fetch sponsored bills
-    const billsResult = await db.query(
-      `
-      SELECT bill_number, title, latest_status, introduction_date
-      FROM bills
-      WHERE sponsor_bioguide_id = $1
-      ORDER BY introduction_date DESC
-      LIMIT 10
-      `,
-      [bioguide_id]
-    );
-    legislator.sponsored_bills = billsResult.rows;
-
-    // Fetch campaign finance summary
-    const financeResult = await db.query(
-      `
-      SELECT *
-      FROM campaign_finance
-      WHERE bioguide_id = $1
-      `,
-      [bioguide_id]
-    );
-    legislator.campaign_finance = financeResult.rows[0] || null;
-
-    return res.status(200).json(legislator);
-
-  } catch (err) {
-    console.error('Error fetching legislator profile:', err);
-    return res.status(500).json({ error: 'Failed to fetch legislator profile' });
+  const handleReset = () => {
+    setQuery('')
+    setParty('')
+    setStateFilter('')
+    setPage(1)
   }
-});
 
-module.exports = router;
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE)
+
+  return (
+    <div className="space-y-6">
+      {/* Search & Filters */}
+      <div className="flex flex-wrap gap-3 items-end">
+        <div className="flex-1 min-w-[200px]">
+          <label className="block text-sm font-medium mb-1">Search Name</label>
+          <input
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="e.g. Smith"
+            className="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Party</label>
+          <select
+            value={party}
+            onChange={e => setParty(e.target.value)}
+            className="border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            {PARTIES.map(p => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">State</label>
+          <select
+            value={stateFilter}
+            onChange={e => setStateFilter(e.target.value)}
+            className="border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            {STATES.map(s => (
+              <option key={s} value={s}>
+                {s || 'All States'}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPage(1)}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+          >
+            Apply
+          </button>
+          <button
+            onClick={handleReset}
+            className="border border-gray-300 px-4 py-2 rounded hover:bg-gray-100"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {/* Results */}
+      {loading && (
+        <p className="text-center text-gray-500">Loading legislators…</p>
+      )}
+      {error && (
+        <p className="text-center text-red-600">Error: {error}</p>
+      )}
+      {!loading && !error && legislators.length === 0 && (
+        <p className="text-center text-gray-600">No legislators found.</p>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {legislators.map(leg => (
+          <LegislatorCard key={leg.bioguide_id} legislator={leg} />
+        ))}
+      </div>
+
+      {/* Pagination */}
+      <div className="flex justify-center items-center gap-4 py-4">
+        <button
+          onClick={() => setPage(p => Math.max(1, p - 1))}
+          disabled={page === 1}
+          className={`px-4 py-2 rounded border ${
+            page === 1
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:bg-gray-100'
+          }`}
+        >
+          ← Prev
+        </button>
+        <span className="text-sm text-gray-700">
+          Page {page} of {totalPages}
+        </span>
+        <button
+          onClick={() => setPage(p => p + 1))}
+          disabled={page >= totalPages}
+          className={`px-4 py-2 rounded border ${
+            page >= totalPages
+              ? 'opacity-50 cursor-not-allowed'
+              : 'hover:bg-gray-100'
+          }`}
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  )
+}
