@@ -97,13 +97,13 @@ export default function App() {
   return (
     <ApiContext.Provider value={apiBase}>
       <Routes>
-        <Route path="/" element={<Layout />}>
+        <Route path="/" element={<Layout />}>  
           {/* Redirect root → /legislators */}
           <Route index element={<Navigate to="legislators" replace />} />
 
           {/* Legislator pages */}
           <Route path="legislators" element={<LegislatorList />} />
-          <Route path="legislators/:bioguideId" element={<LegislatorProfile />} />
+          <Route path="legislators/:bioguide_id" element={<LegislatorProfile />} />
 
           {/* Bills pages */}
           <Route path="bills" element={<BillsList />} />
