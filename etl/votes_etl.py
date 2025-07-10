@@ -80,7 +80,7 @@ def upsert_vote(vote: Dict) -> bool:
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                # Upsert vote_session
+                # 1. Upsert vote_session
                 cur.execute(
                     """
                     INSERT INTO vote_sessions
@@ -101,24 +101,34 @@ def upsert_vote(vote: Dict) -> bool:
                         vote["question"], vote["description"], vote["result"], vote["bill_id"]
                     )
                 )
-                res = cur.fetchone()
-                vsid = res[0] if res else cur.execute(
-                    "SELECT id FROM vote_sessions WHERE vote_id = %s",
-                    (vote["vote_id"],)
-                ) or cur.fetchone()[0]
+                result = cur.fetchone()
+                if result:
+                    vsid = result[0]
+                else:
+                    # Explicit fallback to select existing session id
+                    cur.execute(
+                        "SELECT id FROM vote_sessions WHERE vote_id = %s",
+                        (vote["vote_id"],)
+                    )
+                    vsid_row = cur.fetchone()
+                    vsid = vsid_row[0] if vsid_row else None
 
-                # Bulk insert/update vote_records
-                biogs = [r.get("bioguide_id") for r in vote["tally"] if r.get("bioguide_id")]
-                cur.execute(
-                    "SELECT bioguide_id, id FROM legislators WHERE bioguide_id = ANY(%s)",
-                    (biogs,)
-                )
-                mapping = {b: i for b, i in cur.fetchall()}
+                # 2. Bulk insert/update vote_records
+                biogs = [r.get("bioguide_id") for r in vote.get("tally", []) if r.get("bioguide_id")]
+                if biogs:
+                    cur.execute(
+                        "SELECT bioguide_id, id FROM legislators WHERE bioguide_id = ANY(%s)",
+                        (biogs,)
+                    )
+                    mapping = {b: i for b, i in cur.fetchall()}
+                else:
+                    mapping = {}
 
-                records = [
-                    (vsid, mapping[b], normalize_vote(r["position"]))
-                    for r in vote["tally"] if (b := r.get("bioguide_id")) in mapping
-                ]
+                records = []
+                for r in vote.get("tally", []):
+                    biog = r.get("bioguide_id")
+                    if biog in mapping:
+                        records.append((vsid, mapping[biog], normalize_vote(r.get("position", ""))))
 
                 if records:
                     psycopg2.extras.execute_values(
@@ -156,8 +166,7 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
     return None
 
 # ── PARSERS ─────────────────────────────────────────────────────────────────────
-# parse_house and parse_senate unchanged
-
+# parse_house and parse_senate remain unchanged
 def parse_house(congress: int, session: int, roll: int) -> Optional[Dict]:
     year = 2023 if (congress==118 and session==1) else (2024 if (congress==118 and session==2) else datetime.now().year)
     url  = HOUSE_URL.format(year=year, roll=roll)
@@ -235,7 +244,6 @@ def parse_senate(congress: int, session: int, roll: int) -> Optional[Dict]:
         "bill_id":    None,
         "tally":      tally,
     }
-
 # ── DRIVER ─────────────────────────────────────────────────────────────────────
 
 def run_chamber(name: str, parser, congress: int, session: int):
@@ -245,7 +253,7 @@ def run_chamber(name: str, parser, congress: int, session: int):
     roll     = 1
     while misses < MAX_CONSECUTIVE_MISSES:
         vote = parser(congress, session, roll)
-        if vote and vote["tally"]:
+        if vote and vote.get("tally"):
             if upsert_vote(vote):
                 inserted += 1
             misses = 0
@@ -262,7 +270,6 @@ def main():
     p.add_argument("session", type=int, nargs="?", default=1)
     args = p.parse_args()
 
-    # Parallelize House and Senate runs
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
             executor.submit(run_chamber, "house", parse_house, args.congress, args.session),
