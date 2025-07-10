@@ -1,18 +1,19 @@
 // src/components/LegislatorCard.jsx
-import React, { useState } from 'react';
-import PropTypes from 'prop-types';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react'
+import PropTypes from 'prop-types'
+import { Link } from 'react-router-dom'
+import placeholder from '../assets/placeholder-portrait.png'
 
 /**
- * Displays a single legislator card with a secure image from the
- * GitHub repo (valid SSL), plus a local placeholder fallback.
+ * Displays a single legislator card with a fast, cached image from the CDN,
+ * plus a local placeholder fallback on error.
  */
 export default function LegislatorCard({ legislator, size = '225x275' }) {
-  const { bioguide_id: id, full_name: name, party, state } = legislator;
-  const [loaded, setLoaded] = useState(false);
-
-  // Always use the GitHub repo images (valid Cloudflare SSL)
-  const src = `https://raw.githubusercontent.com/unitedstates/congress-legislators/main/images/congress/${size}/${id}.jpg`;
+  const { bioguide_id: id, full_name: name, party, state } = legislator
+  const [src, setSrc] = useState(
+    `https://cdn.jsdelivr.net/gh/unitedstates/congress-legislators@main/images/congress/${size}/${id}.jpg`
+  )
+  const [loaded, setLoaded] = useState(false)
 
   return (
     <Link
@@ -23,14 +24,15 @@ export default function LegislatorCard({ legislator, size = '225x275' }) {
         {!loaded && <div className="absolute inset-0 animate-pulse bg-gray-200" />}
         <img
           src={src}
+          loading="lazy"
           alt={name}
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
             loaded ? 'opacity-100' : 'opacity-0'
           }`}
           onLoad={() => setLoaded(true)}
-          onError={(e) => {
-            e.currentTarget.onerror = null;
-            e.currentTarget.src = '/placeholder-portrait.png';
+          onError={() => {
+            setSrc(placeholder)
+            setLoaded(true)
           }}
         />
       </div>
@@ -44,7 +46,7 @@ export default function LegislatorCard({ legislator, size = '225x275' }) {
         </p>
       </div>
     </Link>
-  );
+  )
 }
 
 LegislatorCard.propTypes = {
@@ -55,4 +57,4 @@ LegislatorCard.propTypes = {
     state:       PropTypes.string,
   }).isRequired,
   size: PropTypes.oneOf(['225x275', '450x550', 'original']),
-};
+}
