@@ -2,7 +2,7 @@
 import React, { useState } from 'react'
 import PropTypes from 'prop-types'
 import { Link } from 'react-router-dom'
-import placeholder from '../assets/placeholder-portrait.png'
+import placeholder from '../frontend/public/placeholder-portrait.png'
 
 /**
  * Displays a single legislator card with a fast, cached image from the CDN,
