@@ -67,9 +67,17 @@ CREATE TABLE committee_assignments (
     congress INT,
     committee_name TEXT NOT NULL,
     subcommittee_name TEXT,
-    role TEXT,
-    UNIQUE (legislator_id, congress, committee_name, COALESCE(subcommittee_name, ''))
+    role TEXT
 );
+
+-- Preserve COALESCE uniqueness via a functional unique index
+CREATE UNIQUE INDEX uq_committee_assignments
+  ON committee_assignments(
+    legislator_id,
+    congress,
+    committee_name,
+    COALESCE(subcommittee_name, '')
+  );
 
 -- ===== VOTE SESSIONS =====
 CREATE TABLE vote_sessions (
