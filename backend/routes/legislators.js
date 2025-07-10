@@ -158,7 +158,7 @@ router.get('/:bioguide_id', async (req, res) => {
 
     return res.json(legislator)
   } catch (err) {
-    console.error('Error fetching legislator profile:', err)
+    console.error(err.stack || err.message)
     return res.status(500).json({ error: 'Failed to fetch legislator profile' })
   }
 })
