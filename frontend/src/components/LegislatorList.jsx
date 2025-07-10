@@ -40,6 +40,8 @@ export default function LegislatorList() {
   const [stateFilter, setStateFilter] = useState('')
 
   useEffect(() => {
+    const controller = new AbortController()
+
     async function fetchLegislators() {
       setLoading(true)
       setError('')
@@ -51,17 +53,27 @@ export default function LegislatorList() {
         if (party) params.set('party', party)
         if (stateFilter) params.set('state', stateFilter)
 
-        const res = await fetch(`${API_URL}/api/legislators?${params.toString()}`)
+        const res = await fetch(
+          `${API_URL}/api/legislators?${params.toString()}`,
+          { signal: controller.signal }
+        )
         if (!res.ok) throw new Error(`Server responded ${res.status}`)
         const data = await res.json()
         setLegislators(data)
       } catch (err) {
-        setError(err.message)
+        if (err.name !== 'AbortError') {
+          setError(err.message)
+        }
       } finally {
         setLoading(false)
       }
     }
+
     fetchLegislators()
+
+    return () => {
+      controller.abort()
+    }
   }, [API_URL, page, debouncedQuery, party, stateFilter])
 
   const handleReset = () => {
