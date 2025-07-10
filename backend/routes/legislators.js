@@ -50,9 +50,9 @@ router.get('/', async (req, res) => {
 router.get('/:bioguide_id', async (req, res) => {
   const { bioguide_id } = req.params
   let legislator
+  let legislatorId
 
   // 1) Core legislator row (grab integer PK as "id")
-  let legislatorId
   try {
     const coreRes = await db.query(
       `
@@ -82,8 +82,7 @@ router.get('/:bioguide_id', async (req, res) => {
     // pull out the integer PK for downstream queries
     legislatorId = coreRes.rows[0].id
 
-    // strip out the internal id from the object sent to client
-    // but keep bioguide_id and all other fields
+    // strip internal id, keep bioguide_id + other fields for client
     const { id, ...clientLeg } = coreRes.rows[0]
     legislator = clientLeg
   } catch (err) {
@@ -94,7 +93,7 @@ router.get('/:bioguide_id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch core legislator info' })
   }
 
-  // 2) Service history (use integer FK)
+  // 2) Service history
   try {
     const svc = await db.query(
       `
@@ -114,18 +113,16 @@ router.get('/:bioguide_id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch service history' })
   }
 
-  // 3) Committee assignments
+  // 3) Committee assignments (fixed column names)
   try {
     const comm = await db.query(
       `
-      SELECT committee_id,
-             committee_name AS name,
-             role,
-             congress,
-             subcommittee_name,
-             -- note: no from_date/to_date in this table; adjust as needed
-             start_date,
-             end_date
+      SELECT
+        id               AS committee_id,
+        committee_name   AS name,
+        role,
+        congress,
+        subcommittee_name
       FROM committee_assignments
       WHERE legislator_id = $1
       `,
@@ -189,7 +186,7 @@ router.get('/:bioguide_id', async (req, res) => {
     const finance = await db.query(
       `
       SELECT cycle,
-             total_raised  AS total_contributions,
+             total_raised    AS total_contributions,
              industry_breakdown AS top_industries
       FROM campaign_finance
       WHERE legislator_id = $1
@@ -210,8 +207,8 @@ router.get('/:bioguide_id', async (req, res) => {
     const votes = await db.query(
       `
       SELECT vs.date,
-             vs.bill_id   AS bill,
-             vr.vote_cast AS position,
+             vs.bill_id    AS bill,
+             vr.vote_cast  AS position,
              vr.vote_session_id
       FROM vote_records vr
       JOIN vote_sessions vs
