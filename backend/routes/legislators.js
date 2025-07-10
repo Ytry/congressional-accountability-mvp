@@ -1,14 +1,22 @@
-const express = require('express');
-const router = express.Router();
-const db = require('../db');
+// routes/legislators.js
+const express = require('express')
+const router  = express.Router()
+const db      = require('../db')
 
-// GET all legislators
-router.get('/', async (req, res) => {
+// … your paginated GET '/' here …
+
+// GET a single legislator by BioGuide ID
+router.get('/:bioguide_id', async (req, res) => {
+  const { bioguide_id } = req.params
+
   try {
-    const result = await db.query(`
+    // 1) Core legislator row + rename bio_snapshot → bio
+    const { rows } = await db.query(
+      `
       SELECT
         l.bioguide_id,
-        l.full_name,
+        l.first_name,
+        l.last_name,
         l.party,
         l.state,
         l.district,
@@ -16,88 +24,103 @@ router.get('/', async (req, res) => {
         l.portrait_url,
         l.official_website_url,
         l.office_contact,
-        l.bio_snapshot
+        l.bio_snapshot AS bio
       FROM legislators l
-      ORDER BY l.state, l.district NULLS LAST
-    `);
-
-    res.status(200).json(result.rows);
-  } catch (err) {
-    console.error('Error fetching legislators:', err);
-    res.status(500).json({ error: 'Failed to fetch legislators' });
-  }
-});
-
-// GET a single legislator by BioGuide ID
-router.get('/:bioguide_id', async (req, res) => {
-  const { bioguide_id } = req.params;
-
-  try {
-    const legislatorResult = await db.query(`
-      SELECT *
-      FROM legislators
-      WHERE bioguide_id = $1
-    `, [bioguide_id]);
-
-    if (legislatorResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Legislator not found' });
+      WHERE l.bioguide_id = $1
+      `,
+      [bioguide_id]
+    )
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Legislator not found' })
     }
+    const legislator = rows[0]
 
-    const legislator = legislatorResult.rows[0];
+    // 2) Service history
+    const svc = await db.query(
+      `
+      SELECT chamber, start_date, end_date
+      FROM service_history
+      WHERE bioguide_id = $1
+      ORDER BY start_date DESC
+      `,
+      [bioguide_id]
+    )
+    legislator.service_history = svc.rows
 
-    // Fetch committees
-    const committeesResult = await db.query(`
-      SELECT committee_name, role
+    // 3) Committee assignments
+    const comm = await db.query(
+      `
+      SELECT committee_id, name, role, from_date AS from, to_date AS to
       FROM committee_assignments
       WHERE bioguide_id = $1
-    `, [bioguide_id]);
+      `,
+      [bioguide_id]
+    )
+    legislator.committees = comm.rows
 
-    legislator.committees = committeesResult.rows;
+    // 4) Leadership roles
+    const lead = await db.query(
+      `
+      SELECT title, start_date, end_date
+      FROM leadership_roles
+      WHERE bioguide_id = $1
+      `,
+      [bioguide_id]
+    )
+    legislator.leadership_positions = lead.rows
 
-    // Fetch votes
-    const votesResult = await db.query(`
-      SELECT
-        v.bill_number,
-        v.question_text,
-        v.vote_result,
-        v.vote_description,
-        v.date,
-        mv.member_vote_position
-      FROM member_votes mv
-      JOIN votes v ON mv.vote_id = v.vote_id
-      WHERE mv.bioguide_id = $1
-      ORDER BY v.date DESC
-      LIMIT 20
-    `, [bioguide_id]);
-
-    legislator.voting_record = votesResult.rows;
-
-    // Fetch sponsored bills
-    const billsResult = await db.query(`
-      SELECT bill_number, title, latest_status, introduction_date
-      FROM bills
+    // 5) Sponsored bills (bill_sponsorships)
+    const bills = await db.query(
+      `
+      SELECT bill_id,
+             title,
+             latest_status AS status,
+             introduction_date AS date
+      FROM bill_sponsorships
       WHERE sponsor_bioguide_id = $1
       ORDER BY introduction_date DESC
       LIMIT 10
-    `, [bioguide_id]);
+      `,
+      [bioguide_id]
+    )
+    legislator.sponsored_bills = bills.rows
 
-    legislator.sponsored_bills = billsResult.rows;
-
-    // Fetch campaign finance summary
-    const financeResult = await db.query(`
-      SELECT *
+    // 6) Campaign finance
+    const finance = await db.query(
+      `
+      SELECT cycle,
+             total_contributions,
+             top_industries
       FROM campaign_finance
       WHERE bioguide_id = $1
-    `, [bioguide_id]);
+      `,
+      [bioguide_id]
+    )
+    legislator.finance_summary = finance.rows[0] || {}
 
-    legislator.campaign_finance = financeResult.rows[0] || null;
+    // 7) Recent votes via vote_records → vote_sessions
+    const votes = await db.query(
+      `
+      SELECT
+        vs.date,
+        vs.bill_number   AS bill,
+        vr.position      AS position
+      FROM vote_records vr
+      JOIN vote_sessions vs
+        ON vr.vote_session_id = vs.vote_session_id
+      WHERE vr.bioguide_id = $1
+      ORDER BY vs.date DESC
+      LIMIT 20
+      `,
+      [bioguide_id]
+    )
+    legislator.recent_votes = votes.rows
 
-    res.status(200).json(legislator);
-
+    return res.json(legislator)
   } catch (err) {
-    console.error('Error fetching legislator profile:', err);
-    res.status(500).json({ error: 'Failed to fetch legislator profile' });
+    console.error('Error fetching legislator profile:', err)
+    return res.status(500).json({ error: 'Failed to fetch legislator profile' })
   }
-});
+})
 
-module.exports = router;
+module.exports = router
