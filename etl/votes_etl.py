@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# votes_etl.py — ETL for House (XML) and Senate (XML) roll‑calls, with idempotent upserts and bulk inserts
+# votes_etl.py — ETL for House (XML) and Senate (XML) roll-calls, with idempotent upserts, bulk inserts, and connection pooling
 
 import os
 import json
@@ -8,6 +8,8 @@ import time
 import requests
 import psycopg2
 import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
 import xml.etree.ElementTree as ET
 
 from datetime import datetime
@@ -26,17 +28,32 @@ DB = {
     "port":     os.getenv("DB_PORT"),
 }
 
+# ── CONNECTION POOL ──────────────────────────────────────────────────────────────
+try:
+    conn_pool = ThreadedConnectionPool(minconn=1, maxconn=10, **DB)
+except Exception as e:
+    logging.error(f"Failed to create connection pool: {e}")
+    raise
+
+@contextmanager
+def get_conn():
+    conn = conn_pool.getconn()
+    try:
+        yield conn
+    finally:
+        conn_pool.putconn(conn)
+
+# ── CONSTANTS ──────────────────────────────────────────────────────────────────
 HOUSE_URL      = "https://clerk.house.gov/evs/{year}/roll{roll:03d}.xml"
 SENATE_XML_URL = (
     "https://www.senate.gov/legislative/LIS/roll_call_votes/"
     "vote{congress}{session}/vote_{congress}_{session}_{roll:05d}.xml"
 )
-
 MAX_RETRIES            = 3
 RETRY_DELAY            = 0.5       # seconds
 MAX_CONSECUTIVE_MISSES = 10        # stop after this many empty rolls
 
-# Load Name→Bioguide map for Senate lookups (first-last)
+# Load Name→Bioguide map for Senate lookups
 try:
     with open("name_to_bioguide.json") as f:
         NAME_TO_BIOGUIDE = json.load(f)
@@ -55,93 +72,81 @@ def normalize_vote(raw: str) -> str:
     if s in ("absent", "a"):                  return "Absent"
     return "Unknown"
 
-
-def connect_db():
-    return psycopg2.connect(**DB)
-
+# ── CORE DB OPERATION ──────────────────────────────────────────────────────────
 
 def upsert_vote(vote: Dict) -> bool:
     """
     Insert or update a vote_session and its related vote_records in bulk.
     """
-    conn = connect_db()
-    cur = conn.cursor()
-    try:
-        # 1. Upsert vote_session
-        cur.execute(
-            """
-            INSERT INTO vote_sessions
-              (vote_id, congress, chamber, date, question, description, result, bill_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (vote_id) DO UPDATE
-              SET congress     = EXCLUDED.congress,
-                  chamber      = EXCLUDED.chamber,
-                  date         = EXCLUDED.date,
-                  question     = EXCLUDED.question,
-                  description  = EXCLUDED.description,
-                  result       = EXCLUDED.result,
-                  bill_id      = EXCLUDED.bill_id
-            RETURNING id
-            """,
-            (
-                vote["vote_id"], vote["congress"], vote["chamber"], vote["date"],
-                vote["question"], vote["description"], vote["result"], vote["bill_id"]
-            )
-        )
-        res = cur.fetchone()
-        if res:
-            vsid = res[0]
-        else:
-            # If existed already, fetch the existing id
-            cur.execute("SELECT id FROM vote_sessions WHERE vote_id = %s", (vote["vote_id"],))
-            vsid = cur.fetchone()[0]
+    with get_conn() as conn:
+        try:
+            with conn.cursor() as cur:
+                # 1. Upsert vote_session
+                cur.execute(
+                    """
+                    INSERT INTO vote_sessions
+                      (vote_id, congress, chamber, date, question, description, result, bill_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (vote_id) DO UPDATE
+                      SET congress     = EXCLUDED.congress,
+                          chamber      = EXCLUDED.chamber,
+                          date         = EXCLUDED.date,
+                          question     = EXCLUDED.question,
+                          description  = EXCLUDED.description,
+                          result       = EXCLUDED.result,
+                          bill_id      = EXCLUDED.bill_id
+                    RETURNING id
+                    """,
+                    (
+                        vote["vote_id"], vote["congress"], vote["chamber"], vote["date"],
+                        vote["question"], vote["description"], vote["result"], vote["bill_id"]
+                    )
+                )
+                res = cur.fetchone()
+                if res:
+                    vsid = res[0]
+                else:
+                    cur.execute("SELECT id FROM vote_sessions WHERE vote_id = %s", (vote["vote_id"],))
+                    vsid = cur.fetchone()[0]
 
-        # 2. Bulk insert or update vote_records
-        # Prepare legislator lookup cache
-        cache: Dict[str, Optional[int]] = {}
-        def leg_id(biog: Optional[str]) -> Optional[int]:
-            if not biog:
-                return None
-            if biog in cache:
-                return cache[biog]
-            cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (biog,))
-            r = cur.fetchone()
-            cache[biog] = r[0] if r else None
-            return cache[biog]
+                # 2. Bulk insert or update vote_records
+                # Prefetch legislator IDs in batch
+                biogs = [rec.get("bioguide_id") for rec in vote["tally"] if rec.get("bioguide_id")]
+                cur.execute(
+                    "SELECT bioguide_id, id FROM legislators WHERE bioguide_id = ANY(%s)",
+                    (biogs,)
+                )
+                mapping = {row[0]: row[1] for row in cur.fetchall()}
 
-        records = []
-        for rec in vote["tally"]:
-            lid = leg_id(rec["bioguide_id"])
-            if lid:
-                records.append((vsid, lid, normalize_vote(rec["position"])) )
+                records = []
+                for rec in vote["tally"]:
+                    lid = mapping.get(rec.get("bioguide_id"))
+                    if lid:
+                        records.append((vsid, lid, normalize_vote(rec["position"])) )
 
-        if records:
-            psycopg2.extras.execute_values(
-                cur,
-                """
-                INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
-                VALUES %s
-                ON CONFLICT (vote_session_id, legislator_id) DO UPDATE
-                  SET vote_cast = EXCLUDED.vote_cast
-                """,
-                records,
-                template=None,
-                page_size=100
-            )
+                if records:
+                    psycopg2.extras.execute_values(
+                        cur,
+                        """
+                        INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
+                        VALUES %s
+                        ON CONFLICT (vote_session_id, legislator_id) DO UPDATE
+                          SET vote_cast = EXCLUDED.vote_cast
+                        """,
+                        records,
+                        page_size=100
+                    )
 
-        conn.commit()
-        logging.info(f"✅ {vote['vote_id']} (+{len(records)} positions)")
-        return True
+            conn.commit()
+            logging.info(f"✅ {vote['vote_id']} (+{len(records)} positions)")
+            return True
 
-    except Exception as e:
-        conn.rollback()
-        logging.error(f"❌ DB error for {vote['vote_id']}: {e}")
-        return False
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"❌ DB error for {vote['vote_id']}: {e}")
+            return False
 
-    finally:
-        cur.close()
-        conn.close()
-
+# ── RETRYABLE FETCH ─────────────────────────────────────────────────────────────
 
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
     for i in range(1, MAX_RETRIES + 1):
@@ -149,14 +154,15 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
             r = requests.get(url, timeout=10)
             if r.status_code == 200:
                 return r
+            if r.status_code == 404:
+                return None
         except Exception as e:
             logging.debug(f"Retry {i} for {url} failed: {e}")
-        time.sleep(RETRY_DELAY)
+        time.sleep(RETRY_DELAY * (2 ** (i-1)))
     return None
 
 # ── PARSERS ─────────────────────────────────────────────────────────────────────
-
-# ... (parse_house and parse_senate remain unchanged) ...
+# parse_house and parse_senate remain unchanged
 def parse_house(congress: int, session: int, roll: int) -> Optional[Dict]:
     # map 118-1→2023, 118-2→2024
     year = 2023 if (congress==118 and session==1) else (2024 if (congress==118 and session==2) else datetime.now().year)
