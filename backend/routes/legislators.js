@@ -88,7 +88,7 @@ router.get('/:bioguide_id', async (req, res) => {
     legislator.service_history = svc.rows
 
     // 3) Committee assignments
-   /* const comm = await db.query(
+    const comm = await db.query(
       `
       SELECT committee_id, name, role, from_date AS from, to_date AS to
       FROM committee_assignments
@@ -97,7 +97,7 @@ router.get('/:bioguide_id', async (req, res) => {
       [bioguide_id]
     )
     legislator.committees = comm.rows
-*/
+    
     // 4) Leadership roles
     const lead = await db.query(
       `
