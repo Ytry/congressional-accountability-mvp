@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# votes_etl.py — ETL for House (XML) and Senate (XML) roll‐calls, upserting into Postgres
+# votes_etl.py — ETL for House (XML) and Senate (XML) roll‑calls, with idempotent upserts and bulk inserts
 
 import os
 import json
@@ -7,6 +7,7 @@ import logging
 import time
 import requests
 import psycopg2
+import psycopg2.extras
 import xml.etree.ElementTree as ET
 
 from datetime import datetime
@@ -54,20 +55,32 @@ def normalize_vote(raw: str) -> str:
     if s in ("absent", "a"):                  return "Absent"
     return "Unknown"
 
+
 def connect_db():
     return psycopg2.connect(**DB)
 
+
 def upsert_vote(vote: Dict) -> bool:
-    conn = connect_db(); cur = conn.cursor()
+    """
+    Insert or update a vote_session and its related vote_records in bulk.
+    """
+    conn = connect_db()
+    cur = conn.cursor()
     try:
-        # Insert session, skip if exists
+        # 1. Upsert vote_session
         cur.execute(
             """
             INSERT INTO vote_sessions
-              (vote_id, congress, chamber, date, question,
-               description, result, bill_id)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (vote_id) DO NOTHING
+              (vote_id, congress, chamber, date, question, description, result, bill_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (vote_id) DO UPDATE
+              SET congress     = EXCLUDED.congress,
+                  chamber      = EXCLUDED.chamber,
+                  date         = EXCLUDED.date,
+                  question     = EXCLUDED.question,
+                  description  = EXCLUDED.description,
+                  result       = EXCLUDED.result,
+                  bill_id      = EXCLUDED.bill_id
             RETURNING id
             """,
             (
@@ -75,34 +88,45 @@ def upsert_vote(vote: Dict) -> bool:
                 vote["question"], vote["description"], vote["result"], vote["bill_id"]
             )
         )
-        row = cur.fetchone()
-        if not row:
-            return False
-        vsid = row[0]
+        res = cur.fetchone()
+        if res:
+            vsid = res[0]
+        else:
+            # If existed already, fetch the existing id
+            cur.execute("SELECT id FROM vote_sessions WHERE vote_id = %s", (vote["vote_id"],))
+            vsid = cur.fetchone()[0]
 
+        # 2. Bulk insert or update vote_records
         # Prepare legislator lookup cache
-        cache: Dict[str,Optional[int]] = {}
+        cache: Dict[str, Optional[int]] = {}
         def leg_id(biog: Optional[str]) -> Optional[int]:
             if not biog:
                 return None
             if biog in cache:
                 return cache[biog]
-            cur.execute("SELECT id FROM legislators WHERE bioguide_id=%s", (biog,))
+            cur.execute("SELECT id FROM legislators WHERE bioguide_id = %s", (biog,))
             r = cur.fetchone()
             cache[biog] = r[0] if r else None
             return cache[biog]
 
-        # Insert all vote_records
         records = []
         for rec in vote["tally"]:
             lid = leg_id(rec["bioguide_id"])
             if lid:
-                records.append((vsid, lid, normalize_vote(rec["position"])))
+                records.append((vsid, lid, normalize_vote(rec["position"])) )
+
         if records:
-            cur.executemany(
-                "INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast) "
-                "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                records
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO vote_records (vote_session_id, legislator_id, vote_cast)
+                VALUES %s
+                ON CONFLICT (vote_session_id, legislator_id) DO UPDATE
+                  SET vote_cast = EXCLUDED.vote_cast
+                """,
+                records,
+                template=None,
+                page_size=100
             )
 
         conn.commit()
@@ -115,10 +139,12 @@ def upsert_vote(vote: Dict) -> bool:
         return False
 
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
+
 
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
-    for i in range(1, MAX_RETRIES+1):
+    for i in range(1, MAX_RETRIES + 1):
         try:
             r = requests.get(url, timeout=10)
             if r.status_code == 200:
@@ -130,6 +156,7 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
 
 # ── PARSERS ─────────────────────────────────────────────────────────────────────
 
+# ... (parse_house and parse_senate remain unchanged) ...
 def parse_house(congress: int, session: int, roll: int) -> Optional[Dict]:
     # map 118-1→2023, 118-2→2024
     year = 2023 if (congress==118 and session==1) else (2024 if (congress==118 and session==2) else datetime.now().year)
@@ -239,6 +266,7 @@ def run_chamber(name: str, parser, congress: int, session: int):
 
     logging.info(f"🏁 {name.capitalize()} done: inserted {inserted} sessions\n")
 
+
 def main():
     import argparse
     p = argparse.ArgumentParser()
@@ -248,6 +276,7 @@ def main():
 
     run_chamber("house", parse_house,  args.congress, args.session)
     run_chamber("senate", parse_senate, args.congress, args.session)
+
 
 if __name__ == "__main__":
     main()
