@@ -4,6 +4,46 @@ const router  = express.Router()
 const db      = require('../db')
 
 // … your paginated GET '/' here …
+router.get('/', async (req, res) => {
+  const page     = parseInt(req.query.page, 10)     || 1
+  const pageSize = parseInt(req.query.pageSize, 10) || 24
+  const offset   = (page - 1) * pageSize
+
+  try {
+    // total count
+    const countRes  = await db.query('SELECT COUNT(*) FROM legislators')
+    const totalCount= parseInt(countRes.rows[0].count, 10)
+
+    // page slice
+    const result = await db.query(`
+      SELECT
+        bioguide_id,
+        full_name,
+        party,
+        state,
+        district,
+        chamber,
+        portrait_url,
+        official_website_url,
+        office_contact,
+        bio_snapshot
+      FROM legislators
+      ORDER BY state, district NULLS LAST
+      LIMIT $1 OFFSET $2
+    `, [pageSize, offset])
+
+    res.set('X-Total-Count', totalCount)
+    return res.json({
+      items: result.rows,
+      totalCount,
+      page,
+      pageSize
+    })
+  } catch (err) {
+    console.error('Error fetching paginated legislators:', err)
+    return res.status(500).json({ error: 'Failed to fetch legislators' })
+  }
+})
 
 // GET a single legislator by BioGuide ID
 router.get('/:bioguide_id', async (req, res) => {
