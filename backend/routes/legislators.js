@@ -5,7 +5,7 @@ const db      = require('../db')
 
 // ─── GET paginated list ─────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
-  const page     = parseInt(req.query.page, 10)     || 1
+  const page     = parseInt(req.query.page, 10) || 1
   const pageSize = parseInt(req.query.pageSize, 10) || 24
   const offset   = (page - 1) * pageSize
 
@@ -52,12 +52,12 @@ router.get('/:bioguide_id', async (req, res) => {
   let legislator
   let legislatorId
 
-  // 1) Core legislator row (grab integer PK as "id")
+  // 1) Core legislator row (grab integer PK as 'id')
   try {
     const coreRes = await db.query(
       `
       SELECT
-        l.id           AS id,
+        l.id                  AS id,
         l.bioguide_id,
         l.first_name,
         l.last_name,
@@ -68,7 +68,7 @@ router.get('/:bioguide_id', async (req, res) => {
         l.portrait_url,
         l.official_website_url,
         l.office_contact,
-        l.bio_snapshot AS bio
+        l.bio_snapshot        AS bio
       FROM legislators l
       WHERE l.bioguide_id = $1
       `,
@@ -79,10 +79,7 @@ router.get('/:bioguide_id', async (req, res) => {
       return res.status(404).json({ error: 'Legislator not found' })
     }
 
-    // pull out the integer PK for downstream queries
     legislatorId = coreRes.rows[0].id
-
-    // strip internal id, keep bioguide_id + other fields for client
     const { id, ...clientLeg } = coreRes.rows[0]
     legislator = clientLeg
   } catch (err) {
@@ -113,7 +110,7 @@ router.get('/:bioguide_id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch service history' })
   }
 
-  // 3) Committee assignments (fixed column names)
+  // 3) Committee assignments
   try {
     const comm = await db.query(
       `
@@ -141,7 +138,10 @@ router.get('/:bioguide_id', async (req, res) => {
   try {
     const lead = await db.query(
       `
-      SELECT title, start_date, end_date
+      SELECT
+        id        AS leadership_id,
+        congress,
+        role      AS title
       FROM leadership_roles
       WHERE legislator_id = $1
       `,
@@ -160,11 +160,12 @@ router.get('/:bioguide_id', async (req, res) => {
   try {
     const bills = await db.query(
       `
-      SELECT bill_number AS bill_id,
-             title,
-             sponsorship_type AS type,
-             status,
-             date_introduced AS date
+      SELECT
+        bill_number        AS bill_id,
+        title,
+        sponsorship_type   AS type,
+        status,
+        date_introduced    AS date
       FROM bill_sponsorships
       WHERE legislator_id = $1
       ORDER BY date_introduced DESC
@@ -185,9 +186,10 @@ router.get('/:bioguide_id', async (req, res) => {
   try {
     const finance = await db.query(
       `
-      SELECT cycle,
-             total_raised    AS total_contributions,
-             industry_breakdown AS top_industries
+      SELECT
+        cycle,
+        total_raised          AS total_contributions,
+        industry_breakdown    AS top_industries
       FROM campaign_finance
       WHERE legislator_id = $1
       `,
@@ -206,10 +208,11 @@ router.get('/:bioguide_id', async (req, res) => {
   try {
     const votes = await db.query(
       `
-      SELECT vs.date,
-             vs.bill_id    AS bill,
-             vr.vote_cast  AS position,
-             vr.vote_session_id
+      SELECT
+        vs.date,
+        vs.bill_id    AS bill,
+        vr.vote_cast  AS position,
+        vr.vote_session_id
       FROM vote_records vr
       JOIN vote_sessions vs
         ON vr.vote_session_id = vs.vote_session_id
@@ -228,7 +231,6 @@ router.get('/:bioguide_id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch recent votes' })
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // All queries succeeded; return assembled profile
   return res.json(legislator)
 })
