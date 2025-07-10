@@ -1,108 +1,115 @@
-import requests
-import psycopg2
-import json
-import yaml
+#!/usr/bin/env python3
+# legislators_etl.py — ETL for legislators with connection pooling and context managers
+
 import os
+import json
 import logging
 from typing import Optional, List
 
-# --- Logging setup ---
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+import requests
+import yaml
+import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
+from dotenv import load_dotenv
 
-# --- Environment config ---
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
+# ── CONFIG & LOGGING ─────────────────────────────────────────────────────────────
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-CURRENT_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml"
+DB = {
+    "dbname":   os.getenv("DB_NAME"),
+    "user":     os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "host":     os.getenv("DB_HOST"),
+    "port":     os.getenv("DB_PORT"),
+}
+
+# ── CONNECTION POOL ──────────────────────────────────────────────────────────────
+try:
+    conn_pool = ThreadedConnectionPool(minconn=1, maxconn=5, **DB)
+except Exception as e:
+    logging.critical(f"❌ Failed to initialize connection pool: {e}")
+    raise
+
+@contextmanager
+def get_conn():
+    conn = conn_pool.getconn()
+    try:
+        yield conn
+    finally:
+        conn_pool.putconn(conn)
+
+@contextmanager
+def get_cursor():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            yield conn, cur
+
+# ── SOURCES ─────────────────────────────────────────────────────────────────────
+CURRENT_URL    = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml"
 HISTORICAL_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-historical.yaml"
 
-def connect():
-    return psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
-    )
-
+# ── FETCH & PARSE ───────────────────────────────────────────────────────────────
 def fetch_yaml_data(url: str) -> List[dict]:
     logging.info(f"📥 Downloading YAML from: {url}")
-    response = requests.get(url)
-    response.raise_for_status()
-    return yaml.safe_load(response.text)
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    return yaml.safe_load(resp.text)
+
 
 def parse_legislator(raw) -> Optional[dict]:
     try:
         ids = raw.get("id", {})
-        bioguide_id = ids.get("bioguide")
-        icpsr_id = str(ids.get("icpsr")) if ids.get("icpsr") else None
-        if not bioguide_id:
+        bioguide = ids.get("bioguide")
+        if not bioguide:
             return None
-
-        name = raw.get("name", {})
-        first = name.get("first", "")
-        last = name.get("last", "")
-        full_name = f"{first} {last}".strip()
-
-        bio = raw.get("bio", {})
-        birthday = bio.get("birthday")
-        gender = bio.get("gender")
-
         terms = raw.get("terms", [])
         if not terms:
             return None
 
-        last_term = terms[-1]
-        party = last_term.get("party")
-        chamber_type = last_term.get("type", "").lower()
-        chamber = "House" if chamber_type == "rep" else "Senate" if chamber_type == "sen" else None
+        last = terms[-1]
+        chamber = "House" if last.get("type") == "rep" else "Senate" if last.get("type") == "sen" else None
         if not chamber:
             return None
 
-        state = last_term.get("state")
-        district = last_term.get("district") if chamber == "House" else None
-        portrait_url = f"https://theunitedstates.io/images/congress/450x550/{bioguide_id}.jpg"
-        official_website_url = last_term.get("url")
+        name = raw.get("name", {})
+        first, last_name = name.get("first", ""), name.get("last", "")
+        full_name = f"{first} {last_name}".strip()
 
-        contact = {
-            "address": last_term.get("address"),
-            "phone": last_term.get("phone")
-        }
-
-        bio_snapshot = f"{birthday or ''} – {gender or ''}"
+        contact = {"address": last.get("address"), "phone": last.get("phone")}
+        bio_snip = f"{raw.get('bio', {}).get('birthday', '')} – {raw.get('bio', {}).get('gender', '')}"
 
         return {
-            "bioguide_id": bioguide_id,
-            "icpsr_id": icpsr_id,
-            "first_name": first,
-            "last_name": last,
-            "full_name": full_name,
-            "gender": gender,
-            "birthday": birthday,
-            "party": party,
-            "state": state,
-            "district": district,
-            "chamber": chamber,
-            "portrait_url": portrait_url,
-            "official_website_url": official_website_url,
-            "office_contact": contact,
-            "bio_snapshot": bio_snapshot,
-            "terms": terms
+            "bioguide_id":       bioguide,
+            "icpsr_id":          str(ids.get("icpsr")) if ids.get("icpsr") else None,
+            "first_name":        first,
+            "last_name":         last_name,
+            "full_name":         full_name,
+            "gender":            raw.get("bio", {}).get("gender"),
+            "birthday":          raw.get("bio", {}).get("birthday"),
+            "party":             last.get("party"),
+            "state":             last.get("state"),
+            "district":          last.get("district") if chamber == "House" else None,
+            "chamber":           chamber,
+            "portrait_url":      f"https://theunitedstates.io/images/congress/450x550/{bioguide}.jpg",
+            "official_website_url": last.get("url"),
+            "office_contact":    contact,
+            "bio_snapshot":      bio_snip,
+            "terms":             terms,
         }
     except Exception as e:
-        logging.error(f"❌ Failed to parse legislator: {e}")
+        logging.error(f"❌ parse_legislator error: {e}")
         return None
 
+# ── INSERT FUNCTIONS ────────────────────────────────────────────────────────────
 def insert_legislator(cur, leg):
-    cur.execute("""
-        INSERT INTO legislators (
-            bioguide_id, icpsr_id, first_name, last_name, full_name,
-            gender, birthday, party, state, district, chamber,
-            portrait_url, official_website_url, office_contact, bio_snapshot
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+    cur.execute(
+        """
+        INSERT INTO legislators (bioguide_id, icpsr_id, first_name, last_name, full_name,
+                                 gender, birthday, party, state, district, chamber,
+                                 portrait_url, official_website_url, office_contact, bio_snapshot)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
         ON CONFLICT (bioguide_id) DO UPDATE SET
             icpsr_id = EXCLUDED.icpsr_id,
             first_name = EXCLUDED.first_name,
@@ -119,99 +126,109 @@ def insert_legislator(cur, leg):
             office_contact = EXCLUDED.office_contact,
             bio_snapshot = EXCLUDED.bio_snapshot
         RETURNING id;
-    """, (
-        leg["bioguide_id"], leg["icpsr_id"], leg["first_name"], leg["last_name"],
-        leg["full_name"], leg["gender"], leg["birthday"], leg["party"], leg["state"],
-        leg["district"], leg["chamber"], leg["portrait_url"],
-        leg["official_website_url"], json.dumps(leg["office_contact"]),
-        leg["bio_snapshot"]
-    ))
+        """,
+        (
+            leg["bioguide_id"], leg["icpsr_id"], leg["first_name"], leg["last_name"],
+            leg["full_name"], leg["gender"], leg["birthday"], leg["party"], leg["state"],
+            leg["district"], leg["chamber"], leg["portrait_url"], leg["official_website_url"],
+            json.dumps(leg["office_contact"]), leg["bio_snapshot"]
+        )
+    )
     return cur.fetchone()[0]
 
+
 def insert_service_history(cur, legislator_id, terms):
-    for term in terms:
-        cur.execute("""
-            INSERT INTO service_history (
-                legislator_id, start_date, end_date, chamber, state, district, party
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (legislator_id, start_date) DO NOTHING;
-        """, (
-            legislator_id,
-            term.get("start"),
-            term.get("end"),
-            "House" if term.get("type") == "rep" else "Senate",
-            term.get("state"),
-            term.get("district") if term.get("type") == "rep" else None,
-            term.get("party")
-        ))
+    records = []
+    for t in terms:
+        records.append((legislator_id, t.get("start"), t.get("end"),
+                        "House" if t.get("type") == "rep" else "Senate",
+                        t.get("state"), t.get("district") if t.get("type") == "rep" else None,
+                        t.get("party")))
+    psycopg2.extras.execute_values(
+        cur,
+        """
+        INSERT INTO service_history
+            (legislator_id, start_date, end_date, chamber, state, district, party)
+        VALUES %s
+        ON CONFLICT (legislator_id, start_date) DO NOTHING;
+        """,
+        records,
+        page_size=100
+    )
+
 
 def insert_committee_roles(cur, legislator_id, terms):
-    for term in terms:
-        for committee in term.get("committees", []):
-            cur.execute("""
-                INSERT INTO committee_assignments (
-                    legislator_id, congress, committee_name,
-                    subcommittee_name, role
-                ) VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING;
-            """, (
-                legislator_id,
-                term.get("congress"),
-                committee.get("name"),
-                committee.get("subcommittee"),
-                committee.get("position", "Member")
-            ))
+    records = []
+    for t in terms:
+        for c in t.get("committees", []):
+            records.append((legislator_id, t.get("congress"), c.get("name"),
+                            c.get("subcommittee"), c.get("position", "Member")))
+    psycopg2.extras.execute_values(
+        cur,
+        """
+        INSERT INTO committee_assignments
+            (legislator_id, congress, committee_name, subcommittee_name, role)
+        VALUES %s
+        ON CONFLICT (legislator_id, congress, committee_name, subcommittee_name) DO NOTHING;
+        """,
+        records,
+        page_size=100
+    )
+
 
 def insert_leadership_roles(cur, legislator_id, terms):
-    for term in terms:
-        role = term.get("leadership_title")
+    records = []
+    for t in terms:
+        role = t.get("leadership_title")
         if role:
-            cur.execute("""
-                INSERT INTO leadership_roles (
-                    legislator_id, congress, role
-                ) VALUES (%s, %s, %s)
-                ON CONFLICT (legislator_id, congress, role) DO NOTHING;
-            """, (
-                legislator_id,
-                term.get("congress"),
-                role
-            ))
+            records.append((legislator_id, t.get("congress"), role))
+    if records:
+        psycopg2.extras.execute_values(
+            cur,
+            """
+            INSERT INTO leadership_roles (legislator_id, congress, role)
+            VALUES %s
+            ON CONFLICT (legislator_id, congress, role) DO NOTHING;
+            """,
+            records,
+            page_size=100
+        )
 
+# ── ETL DRIVER ──────────────────────────────────────────────────────────────────
 def run():
     logging.info("🚀 Starting legislator ETL job...")
     try:
-        conn = connect()
-        cur = conn.cursor()
-        current_data = fetch_yaml_data(CURRENT_URL)
-        historical_data = fetch_yaml_data(HISTORICAL_URL)
-        combined = current_data + historical_data
+        current = fetch_yaml_data(CURRENT_URL)
+        historical = fetch_yaml_data(HISTORICAL_URL)
+        combined = current + historical
     except Exception as e:
         logging.critical(f"❌ Startup failure: {e}")
         return
 
     success = skipped = failed = 0
+    with get_cursor() as (conn, cur):
+        for raw in combined:
+            leg = parse_legislator(raw)
+            if not leg:
+                skipped += 1
+                continue
+            try:
+                lid = insert_legislator(cur, leg)
+                insert_service_history(cur, lid, leg["terms"])
+                insert_committee_roles(cur, lid, leg["terms"])
+                insert_leadership_roles(cur, lid, leg["terms"])
+                conn.commit()
+                logging.info(f"✅ {leg['bioguide_id']} ({leg['full_name']})")
+                success += 1
+            except Exception as e:
+                logging.error(f"❌ Failed for {leg['bioguide_id']}: {e}")
+                conn.rollback()
+                failed += 1
 
-    for raw in combined:
-        leg = parse_legislator(raw)
-        if not leg:
-            skipped += 1
-            continue
-        try:
-            legislator_id = insert_legislator(cur, leg)
-            insert_service_history(cur, legislator_id, leg["terms"])
-            insert_committee_roles(cur, legislator_id, leg["terms"])
-            insert_leadership_roles(cur, legislator_id, leg["terms"])
-            conn.commit()
-            logging.info(f"✅ {leg['bioguide_id']} ({leg['full_name']})")
-            success += 1
-        except Exception as e:
-            logging.error(f"❌ Failed for {leg['bioguide_id']}: {e}")
-            conn.rollback()
-            failed += 1
+    # Cleanup pool
+    conn_pool.closeall()
 
-    cur.close()
-    conn.close()
-
+    # Summary
     logging.info("🏁 ETL Summary")
     logging.info(f"✅ Inserted: {success}")
     logging.info(f"⏭️ Skipped: {skipped}")
