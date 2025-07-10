@@ -204,7 +204,7 @@ router.get('/:bioguide_id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch finance summary' })
   }
 
-  // 7) Recent votes
+  // 7) Recent votes (fixed JOIN to use vs.id)
   try {
     const votes = await db.query(
       `
@@ -215,7 +215,7 @@ router.get('/:bioguide_id', async (req, res) => {
         vr.vote_session_id
       FROM vote_records vr
       JOIN vote_sessions vs
-        ON vr.vote_session_id = vs.vote_session_id
+        ON vr.vote_session_id = vs.id
       WHERE vr.legislator_id = $1
       ORDER BY vs.date DESC
       LIMIT 20
@@ -225,7 +225,7 @@ router.get('/:bioguide_id', async (req, res) => {
     legislator.recent_votes = votes.rows
   } catch (err) {
     console.error(
-      'Error running RECENT_VOTES query [SELECT … FROM vote_records WHERE vote_records.legislator_id = $1]:',
+      'Error running RECENT_VOTES query [SELECT … FROM vote_records JOIN vote_sessions WHERE vr.legislator_id = $1]:',
       err.stack || err.message
     )
     return res.status(500).json({ error: 'Failed to fetch recent votes' })
