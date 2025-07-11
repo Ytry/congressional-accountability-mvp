@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "preinstall": "pip3 install -r requirements.txt",
-    "postinstall": "python3 ../etl/pictorial_etl.py",
+    "postinstall": "python3 ../etl/generate_name_map.py && python3 ../etl/pictorial_etl.py",
     "start": "node server.js"
   },
   "dependencies": {
