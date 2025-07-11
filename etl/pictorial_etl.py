@@ -37,16 +37,12 @@ doc = fitz.open(PDF_LOCAL)
 mapping = {}
 for page_num in range(len(doc)):
     page = doc[page_num]
-    pix_page = page.get_pixmap()  # full page for cropping
-    page_img = Image.frombytes(
-        "RGB", [pix_page.width, pix_page.height], pix_page.samples
-    )
     images = page.get_images(full=True)
 
     for idx, img_info in enumerate(images, start=1):
         xref = img_info[0]
         img_dict = doc.extract_image(xref)
-        img_bytes = img_dict["image"]
+        img_bytes = img_dict.get("image")
         ext = img_dict.get("ext", "png")
 
         # save headshot
@@ -56,10 +52,15 @@ for page_num in range(len(doc)):
             img_file.write(img_bytes)
         print(f"Saved headshot: {out_path}")
 
-        # get bbox for cropping caption region
+        # Attempt to crop caption region using image bbox
         try:
             bbox = page.get_image_bbox(xref)
-            # crop just below image (30% of its height)
+        except ValueError as ve:
+            print(f"Skipping OCR for {filename}: no image bbox ({ve})")
+            continue
+
+        try:
+            # crop just below image (up to 30% of its height)
             cap_rect = fitz.Rect(
                 bbox.x0,
                 bbox.y1 + 2,
@@ -70,6 +71,7 @@ for page_num in range(len(doc)):
             cap_img = Image.frombytes(
                 "RGB", [cap_pix.width, cap_pix.height], cap_pix.samples
             )
+
             # OCR single-line text
             text = pytesseract.image_to_string(cap_img, config='--psm 7').strip()
             name = text.splitlines()[0] if text else None
@@ -86,15 +88,13 @@ with open(MAPPING_FILE, 'w') as mf:
     json.dump(mapping, mf, indent=2)
 print(f"Name mapping saved: {MAPPING_FILE}")
 
-# 5) Update database
+# 5) Update database if configured
 if DB_ENV_VAR not in os.environ:
-    print(f"Error: env var {DB_ENV_VAR} not set. Cannot update DB.")
-    exit(1)
+    print(f"Error: env var {DB_ENV_VAR} not set. Skipping DB update.")
+    exit(0)
 
-db_url = os.environ[DB_ENV_VAR]
-conn = psycopg2.connect(db_url)
+conn = psycopg2.connect(os.environ[DB_ENV_VAR])
 cur = conn.cursor()
-
 print("Updating legislators.portrait_url from mapping…")
 for full_name, fname in mapping.items():
     portrait_url = f"/portraits/{fname}"
