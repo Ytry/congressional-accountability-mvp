@@ -1,57 +1,68 @@
 #!/usr/bin/env python3
+"""
+Drop-in pictorial_etl.py for:
+ - downloading the Pictorial Directory PDF
+ - extracting each headshot image + OCR’ing the caption
+ - mapping “First Last” → bioguide_id via name_to_bioguide.json
+ - saving portraits as public/portraits/{bioguide_id}.jpg
+ - updating legislators.portrait_url in your Postgres DB
+"""
+
 import os
 import io
+import sys
 import json
 import requests
-import fitz      # PyMuPDF
+import fitz            # PyMuPDF
 import pytesseract
 from PIL import Image
 import psycopg2
 
-# ----- Configuration -----
-PDF_URL        = "https://www.govinfo.gov/content/pkg/GPO-PICTDIR-118/pdf/GPO-PICTDIR-118.pdf"
-PDF_LOCAL      = "pictorial_118.pdf"
-OUT_DIR        = os.path.join("public", "portraits")
-DEBUG_MAP_FILE = "name_to_bioguide.json"
-DB_ENV_VAR     = "DATABASE_URL"
+# ─── Configuration ───────────────────────────────────────────────────────────
+SCRIPT_DIR   = os.path.dirname(__file__)
+PDF_URL      = "https://www.govinfo.gov/content/pkg/GPO-PICTDIR-118/pdf/GPO-PICTDIR-118.pdf"
+PDF_LOCAL    = os.path.join(SCRIPT_DIR, "pictorial_118.pdf")
+OUT_DIR      = os.path.join(SCRIPT_DIR, "..", "public", "portraits")
+MAPPING_FILE = os.path.join(SCRIPT_DIR, "name_to_bioguide.json")
+DB_ENV_VAR   = "DATABASE_URL"
 
-# ----- Name→BioGuide map (you must provide this) -----
-# Expects a module `generate_name_map.py` next to this script:
-#    name_map = { "John Smith": "S000123", ... }
-from generate_name_map import name_map
-
-# Ensure output directory exists
+# ─── Prep output folder ──────────────────────────────────────────────────────
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# 1) Download PDF if needed
+# ─── Load your name→BioGuide map ─────────────────────────────────────────────
+if not os.path.exists(MAPPING_FILE):
+    print(f"[ERROR] Mapping file not found: {MAPPING_FILE}", file=sys.stderr)
+    sys.exit(1)
+
+with open(MAPPING_FILE) as mf:
+    name_map = json.load(mf)
+
+# ─── Download the PDF if it’s missing ────────────────────────────────────────
 if not os.path.exists(PDF_LOCAL):
-    print(f"Downloading PDF to {PDF_LOCAL}…")
+    print(f"[INFO] Downloading pictorial PDF…", file=sys.stderr)
     resp = requests.get(PDF_URL, stream=True)
     resp.raise_for_status()
     with open(PDF_LOCAL, "wb") as f:
         for chunk in resp.iter_content(1024):
             f.write(chunk)
-    print("Download complete.")
+    print(f"[INFO] PDF saved to {PDF_LOCAL}", file=sys.stderr)
 
-# 2) Open PDF
-doc = fitz.open(PDF_LOCAL)
+# ─── Open PDF & iterate images ───────────────────────────────────────────────
+doc     = fitz.open(PDF_LOCAL)
+mapped  = {}   # name → bioguide
+unmapped = []
 
-# 3) Extract, OCR & save portraits
-mapped = {}     # for debug: name → bioguide
-unmapped = []   # names we saw but couldn’t map
-
-for page_num in range(len(doc)):
-    page = doc[page_num]
+for page_index in range(doc.page_count):
+    page   = doc.load_page(page_index)
     images = page.get_images(full=True)
 
-    for idx, img_info in enumerate(images, start=1):
+    for img_idx, img_info in enumerate(images, start=1):
         xref     = img_info[0]
         img_dict = doc.extract_image(xref)
         img_bytes= img_dict["image"]
-        ext      = img_dict.get("ext", "jpg")
         img      = Image.open(io.BytesIO(img_bytes))
 
-        # 3a) OCR caption region
+        # ─ OCR the caption region ───────────────────────────────────
         try:
             bbox    = page.get_image_bbox(xref)
             cap_rect= fitz.Rect(
@@ -67,59 +78,51 @@ for page_num in range(len(doc)):
             text    = pytesseract.image_to_string(cap_img, config="--psm 7").strip()
             name    = text.splitlines()[0] if text else None
         except Exception as e:
-            print(f"[WARN] OCR failed for page{page_num+1}_img{idx}: {e}")
             name = None
+            print(f"[WARN] OCR failed page {page_index+1} img{img_idx}: {e}", file=sys.stderr)
 
         if not name:
-            unmapped.append(f"page{page_num+1}_img{idx}")
+            unmapped.append(f"page{page_index+1}_img{img_idx}")
             continue
 
-        # 3b) Normalize & lookup BioGuide
-        norm = " ".join(name.split()).title()
-        bioguide = name_map.get(norm)
+        # ─ Normalize & lookup Bioguide ─────────────────────────────
+        normalized = " ".join(name.split()).title()
+        bioguide   = name_map.get(normalized)
         if not bioguide:
-            print(f"[WARN] No BioGuide mapping for '{norm}'")
-            unmapped.append(norm)
+            unmapped.append(normalized)
+            print(f"[WARN] No Bioguide for “{normalized}”", file=sys.stderr)
             continue
 
-        # 3c) Save as {bioguide}.jpg
+        # ─ Save as {BIOGUIDE}.jpg ────────────────────────────────────
         out_fn  = f"{bioguide}.jpg"
         out_path= os.path.join(OUT_DIR, out_fn)
         img.save(out_path)
-        print(f"[OK] Saved portrait for {norm} → {out_fn}")
-        mapped[norm] = bioguide
+        mapped[normalized] = bioguide
+        print(f"[OK] {normalized} → {out_fn}", file=sys.stderr)
 
-# 4) (Optional) write debug map
-with open(DEBUG_MAP_FILE, "w") as dm:
-    json.dump({"mapped": mapped, "unmapped": unmapped}, dm, indent=2)
-print(f"Debug mapping written to {DEBUG_MAP_FILE}")
+# ─── Write a debug report ───────────────────────────────────────────────────
+debug_path = os.path.join(SCRIPT_DIR, "pictorial_etl_debug.json")
+with open(debug_path, "w") as df:
+    json.dump({"mapped": mapped, "unmapped": unmapped}, df, indent=2)
+print(f"[INFO] Debug mapping: {debug_path}", file=sys.stderr)
 
-# 5) Update PostgreSQL if configured
-if DB_ENV_VAR not in os.environ:
-    print(f"[INFO] {DB_ENV_VAR} not set – skipping DB update")
-    exit(0)
+# ─── Update Postgres ➔ legislators.portrait_url ─────────────────────────────
+db_url = os.environ.get(DB_ENV_VAR)
+if not db_url:
+    print(f"[INFO] {DB_ENV_VAR} not set; skipping DB update", file=sys.stderr)
+    sys.exit(0)
 
-conn = psycopg2.connect(os.environ[DB_ENV_VAR])
+conn = psycopg2.connect(db_url)
 cur  = conn.cursor()
-print("Updating legislators.portrait_url…")
-for name, bg in mapped.items():
-    portrait_url = f"/portraits/{bg}.jpg"
-    # Use bioguide_id in WHERE for reliability
+for _, bioguide in mapped.items():
+    portrait_url = f"/portraits/{bioguide}.jpg"
     cur.execute(
-        """
-        UPDATE legislators
-           SET portrait_url = %s
-         WHERE bioguide_id = %s
-        """,
-        (portrait_url, bg)
+        "UPDATE legislators SET portrait_url = %s WHERE bioguide_id = %s",
+        (portrait_url, bioguide)
     )
-    print(
-        cur.rowcount
-        and f"  ✔ {name} ({bg})"
-        or f"  ✖ no row for {name} ({bg})"
-    )
+    print(f"[DB] Updated {bioguide}: {cur.rowcount} row(s)", file=sys.stderr)
 
 conn.commit()
 cur.close()
 conn.close()
-print("Database update complete.")
+print("[INFO] Database portrait_url update complete", file=sys.stderr)
