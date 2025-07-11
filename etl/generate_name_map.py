@@ -1,39 +1,80 @@
 #!/usr/bin/env python3
-import requests, json, logging, sys
+import os
+import requests
+import json
+import logging
+import sys
 
+# URL for the official GitHub JSON of current legislators
 CURRENT_URL = (
-  "https://unitedstates.github.io/congress-legislators/legislators-current.json"
+    "https://unitedstates.github.io/congress-legislators/legislators-current.json"
 )
 
+
 def fetch_legislators(url):
+    """
+    Fetch the legislators JSON from the provided URL.
+    """
     r = requests.get(url, timeout=10)
     r.raise_for_status()
     return r.json()
 
-def build_name_to_bioguide(output="name_to_bioguide.json"):
-    logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s: %(message)s")
+
+def build_name_to_bioguide(output_path=None):
+    """
+    Build a mapping of full names to Bioguide IDs for current senators.
+
+    If output_path is None, write to name_to_bioguide.json next to this script.
+    """
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s: %(message)s"
+    )
+
+    # Determine output file location
+    if output_path is None:
+        script_dir = os.path.dirname(__file__)
+        output_path = os.path.join(script_dir, "name_to_bioguide.json")
+
+    logging.info(f"Writing mapping to {output_path}")
     name_to_biog = {}
 
-    for person in fetch_legislators(CURRENT_URL):
-        # only map those with a Senate term
+    # Fetch and filter only those with a Senate term
+    legislators = fetch_legislators(CURRENT_URL)
+    for person in legislators:
         terms = person.get("terms", [])
-        if not any(t["type"]=="sen" for t in terms):
+        # Only include if they have served in the Senate
+        if not any(t.get("type") == "sen" for t in terms):
             continue
 
-        biog = person["id"].get("bioguide")
-        if not biog:
+        biog_id = person.get("id", {}).get("bioguide")
+        if not biog_id:
             continue
 
-        first = person["name"]["first"]
-        middle = person["name"].get("middle","")
-        last = person["name"]["last"]
-        full = f"{first} {middle+' ' if middle else ''}{last}".strip()
+        first = person.get("name", {}).get("first", "")
+        middle = person.get("name", {}).get("middle", "")
+        last = person.get("name", {}).get("last", "")
 
-        name_to_biog[full] = biog
+        # Build full name
+        parts = [first]
+        if middle:
+            parts.append(middle)
+        if last:
+            parts.append(last)
+        full_name = " ".join(parts).strip()
 
-    with open(output,"w") as f:
+        if full_name:
+            name_to_biog[full_name] = biog_id
+
+    # Write out the mapping
+    with open(output_path, "w") as f:
         json.dump(name_to_biog, f, indent=2)
+
     logging.info(f"Wrote {len(name_to_biog)} entries")
 
-if __name__=="__main__":
-    build_name_to_bioguide()
+
+if __name__ == "__main__":
+    # Allow optional custom output path via CLI
+    user_path = sys.argv[1] if len(sys.argv) > 1 else None
+    build_name_to_bioguide(user_path)
