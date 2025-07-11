@@ -6,18 +6,21 @@ import requests
 import fitz      # PyMuPDF
 import pytesseract
 from PIL import Image
+import psycopg2
 
-PDF_URL       = (
+# ----- Configuration -----
+PDF_URL      = (
     "https://www.govinfo.gov/pagelookup?package=GPO-Congressional%20Pictorial%20Directory/118th%20Congress&download=pdf"
 )
-PDF_LOCAL     = "pictorial_118.pdf"
-OUT_DIR       = "portraits"
-MAPPING_FILE  = "name_mapping.json"
+PDF_LOCAL    = "pictorial_118.pdf"
+OUT_DIR      = "portraits"
+MAPPING_FILE = "name_mapping.json"
+DB_ENV_VAR   = "DATABASE_URL"
 
 # Ensure output directory exists
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# 1) Download the PDF if we don't have it
+# 1) Download the PDF if not present
 if not os.path.exists(PDF_LOCAL):
     print(f"Downloading PDF to {PDF_LOCAL}…")
     resp = requests.get(PDF_URL, stream=True)
@@ -27,60 +30,88 @@ if not os.path.exists(PDF_LOCAL):
             f.write(chunk)
     print("Download complete.")
 
-# 2) Open PDF with PyMuPDF
+# 2) Open PDF
 doc = fitz.open(PDF_LOCAL)
 
-# 3) Prepare mapping dict
+# 3) Extract images and OCR captions
 mapping = {}
-
-# 4) Loop pages & extract images + captions
-for page_number in range(len(doc)):
-    page = doc[page_number]
+for page_num in range(len(doc)):
+    page = doc[page_num]
+    pix_page = page.get_pixmap()  # full page for cropping
+    page_img = Image.frombytes(
+        "RGB", [pix_page.width, pix_page.height], pix_page.samples
+    )
     images = page.get_images(full=True)
-    # render full page for caption cropping
-    page_pix = page.get_pixmap()
-    page_img = Image.frombytes("RGB", [page_pix.width, page_pix.height], page_pix.samples)
 
-    for img_index, img_info in enumerate(images):
+    for idx, img_info in enumerate(images, start=1):
         xref = img_info[0]
-        # 4a) Extract and save the headshot image
-        base_image = doc.extract_image(xref)
-        img_bytes  = base_image["image"]
-        ext        = base_image["ext"]
-        img = Image.open(io.BytesIO(img_bytes))
+        img_dict = doc.extract_image(xref)
+        img_bytes = img_dict["image"]
+        ext = img_dict.get("ext", "png")
 
-        img_filename = f"page{page_number+1:02d}_img{img_index+1:02d}.{ext}"
-        img_path     = os.path.join(OUT_DIR, img_filename)
-        img.save(img_path)
-        print(f"📸 Saved headshot {img_path}")
+        # save headshot
+        filename = f"page{page_num+1:02d}_img{idx:02d}.{ext}"
+        out_path = os.path.join(OUT_DIR, filename)
+        with open(out_path, "wb") as img_file:
+            img_file.write(img_bytes)
+        print(f"Saved headshot: {out_path}")
 
-        # 4b) Locate the image bbox and crop just below for caption
+        # get bbox for cropping caption region
         try:
             bbox = page.get_image_bbox(xref)
-            # extend bbox downwards for caption region (30% of image height)
-            caption_rect = fitz.Rect(
+            # crop just below image (30% of its height)
+            cap_rect = fitz.Rect(
                 bbox.x0,
                 bbox.y1 + 2,
                 bbox.x1,
-                bbox.y1 + bbox.height * 0.3
+                bbox.y1 + (bbox.height * 0.3)
             )
-            cap_pix = page.get_pixmap(clip=caption_rect)
+            cap_pix = page.get_pixmap(clip=cap_rect)
             cap_img = Image.frombytes(
                 "RGB", [cap_pix.width, cap_pix.height], cap_pix.samples
             )
-
-            # 4c) OCR the caption region to get the name
+            # OCR single-line text
             text = pytesseract.image_to_string(cap_img, config='--psm 7').strip()
-            name = text.splitlines()[0] if text else ''
+            name = text.splitlines()[0] if text else None
             if name:
-                mapping[name] = img_filename
-                print(f"🔖 Mapped '{name}' → {img_filename}")
+                mapping[name] = filename
+                print(f"Mapped: '{name}' → {filename}")
             else:
-                print(f"⚠️ No text found for caption of {img_filename}")
-        except Exception as err:
-            print(f"⚠️ OCR failed for {img_filename}: {err}")
+                print(f"No OCR text for {filename}")
+        except Exception as e:
+            print(f"OCR error for {filename}: {e}")
 
-# 5) Save the name → filename map
-with open(MAPPING_FILE, "w") as f:
-    json.dump(mapping, f, indent=2)
-print(f"✅ Mapping saved to {MAPPING_FILE}")
+# 4) Save mapping
+with open(MAPPING_FILE, 'w') as mf:
+    json.dump(mapping, mf, indent=2)
+print(f"Name mapping saved: {MAPPING_FILE}")
+
+# 5) Update database
+if DB_ENV_VAR not in os.environ:
+    print(f"Error: env var {DB_ENV_VAR} not set. Cannot update DB.")
+    exit(1)
+
+db_url = os.environ[DB_ENV_VAR]
+conn = psycopg2.connect(db_url)
+cur = conn.cursor()
+
+print("Updating legislators.portrait_url from mapping…")
+for full_name, fname in mapping.items():
+    portrait_url = f"/portraits/{fname}"
+    cur.execute(
+        """
+        UPDATE legislators
+           SET portrait_url = %s
+         WHERE full_name = %s
+        """,
+        (portrait_url, full_name)
+    )
+    if cur.rowcount:
+        print(f"Updated {full_name}")
+    else:
+        print(f"No match for {full_name}")
+
+conn.commit()
+cur.close()
+conn.close()
+print("Database update complete.")
