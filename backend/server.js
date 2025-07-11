@@ -3,9 +3,16 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');             // ← added
 const app = express();
 
-// Define CORS allowed origins from env
+// Serve headshots from public/portraits via GET /portraits/:filename.jpg
+app.use(
+  '/portraits',
+  express.static(path.join(__dirname, 'public', 'portraits'))
+);
+
+ // Define CORS allowed origins from env
 const allowedOrigins = [];
 if (process.env.FRONTEND_ORIGIN) {
   allowedOrigins.push(process.env.FRONTEND_ORIGIN);
@@ -18,18 +25,15 @@ if (process.env.ADDITIONAL_ORIGINS) {
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // allow server-to-server or same-origin
+      if (!origin) return callback(null, true); // allow same‐origin or server‐to‐server
 
-      // Allow listed origins from env
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-
       // Allow Vercel preview/production domains
       if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) {
         return callback(null, true);
       }
-
       // Allow Render domains
       if (/^https:\/\/[a-z0-9-]+\.onrender\.com$/.test(origin)) {
         return callback(null, true);
@@ -45,7 +49,7 @@ app.use(
 // Enable JSON parsing
 app.use(express.json());
 
-// Mount route modules
+// Mount your API routes
 const legislatorsRoute = require('./routes/legislators');
 const votesRoute       = require('./routes/votes');
 const billsRoute       = require('./routes/bills');
@@ -58,7 +62,7 @@ app.use('/api/votes',       votesRoute);
 app.use('/api/bills',       billsRoute);
 app.use('/api/finance',     financeRoute);
 
-// Health check route
+// Health check
 app.get('/', (req, res) => {
   res.send('Congressional Accountability API is running');
 });
