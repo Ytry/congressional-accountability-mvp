@@ -1,18 +1,32 @@
 // src/components/LegislatorCard.jsx
-import React, { useState } from 'react'
+import React, { useState, useContext } from 'react'
 import PropTypes from 'prop-types'
 import { Link } from 'react-router-dom'
 import placeholder from '../assets/placeholder-portrait.png'
+import { ApiContext } from '../App'
 
 /**
- * Displays a single legislator card with a fast, cached image from the CDN,
- * plus a local placeholder fallback on error.
+ * Displays a single legislator card with a headshot sourced
+ * either from our back end (portrait_url) or the CDN, with
+ * a local placeholder fallback on error.
  */
 export default function LegislatorCard({ legislator, size = '225x275' }) {
-  const { bioguide_id: id, full_name: name, party, state } = legislator
-  const [src, setSrc] = useState(
-    `https://cdn.jsdelivr.net/gh/unitedstates/congress-legislators@main/images/congress/${size}/${id}.jpg`
-  )
+  const API_URL = useContext(ApiContext)
+  const {
+    bioguide_id: id,
+    full_name: name,
+    party,
+    state,
+    portrait_url
+  } = legislator
+
+  // Build initial src: prefer our API‐hosted portrait, else fallback to CDN
+  const cdnUrl = `https://cdn.jsdelivr.net/gh/unitedstates/congress-legislators@main/images/congress/${size}/${id}.jpg`
+  const initialSrc = portrait_url
+    ? `${API_URL}${portrait_url}`
+    : cdnUrl
+
+  const [src, setSrc] = useState(initialSrc)
   const [loaded, setLoaded] = useState(false)
 
   return (
@@ -51,10 +65,11 @@ export default function LegislatorCard({ legislator, size = '225x275' }) {
 
 LegislatorCard.propTypes = {
   legislator: PropTypes.shape({
-    bioguide_id: PropTypes.string.isRequired,
-    full_name:   PropTypes.string.isRequired,
-    party:       PropTypes.string,
-    state:       PropTypes.string,
+    bioguide_id:  PropTypes.string.isRequired,
+    full_name:    PropTypes.string.isRequired,
+    party:        PropTypes.string,
+    state:        PropTypes.string,
+    portrait_url: PropTypes.string,       // our new field
   }).isRequired,
   size: PropTypes.oneOf(['225x275', '450x550', 'original']),
 }
