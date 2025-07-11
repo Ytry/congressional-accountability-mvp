@@ -1,94 +1,86 @@
 #!/usr/bin/env python3
-"""
-ETL script to download the Congressional Pictorial Directory PDF for the 118th Congress,
-extract each portrait image, OCR the page to capture the legislator's name, and
-produce a JSON map of full_name → [filenames].
-"""
 import os
-import re
+import io
 import json
-import fitz      # PyMuPDF
 import requests
-from PIL import Image
+import fitz      # PyMuPDF
 import pytesseract
+from PIL import Image
 
-# Constants
-PDF_URL   = (
-    "https://www.govinfo.gov/pagelookup?"
-    "package=GPO-Congressional%20Pictorial%20Directory/118th%20Congress&download=pdf"
+PDF_URL       = (
+    "https://www.govinfo.gov/pagelookup?package=GPO-Congressional%20Pictorial%20Directory/118th%20Congress&download=pdf"
 )
-PDF_LOCAL = "pictorial_118.pdf"
-OUT_DIR   = "portraits"
-MAP_FILE  = "portrait_map.json"
-DPI        = 150
+PDF_LOCAL     = "pictorial_118.pdf"
+OUT_DIR       = "portraits"
+MAPPING_FILE  = "name_mapping.json"
 
+# Ensure output directory exists
+os.makedirs(OUT_DIR, exist_ok=True)
 
-def download_pdf():
-    """Download the PDF if it's not already present."""
-    if not os.path.exists(PDF_LOCAL):
-        print(f"Downloading PDF to {PDF_LOCAL}...")
-        resp = requests.get(PDF_URL, stream=True)
-        resp.raise_for_status()
-        with open(PDF_LOCAL, "wb") as f:
-            for chunk in resp.iter_content(1024):
-                f.write(chunk)
-        print("Download complete.")
+# 1) Download the PDF if we don't have it
+if not os.path.exists(PDF_LOCAL):
+    print(f"Downloading PDF to {PDF_LOCAL}…")
+    resp = requests.get(PDF_URL, stream=True)
+    resp.raise_for_status()
+    with open(PDF_LOCAL, "wb") as f:
+        for chunk in resp.iter_content(1024):
+            f.write(chunk)
+    print("Download complete.")
 
+# 2) Open PDF with PyMuPDF
+doc = fitz.open(PDF_LOCAL)
 
-def sanitize_name(name: str) -> str:
-    """Convert a full name into a filesystem-safe base filename."""
-    # replace any non-alphanumeric runs with underscore, trim
-    return re.sub(r'[^0-9A-Za-z]+', '_', name).strip('_')
+# 3) Prepare mapping dict
+mapping = {}
 
+# 4) Loop pages & extract images + captions
+for page_number in range(len(doc)):
+    page = doc[page_number]
+    images = page.get_images(full=True)
+    # render full page for caption cropping
+    page_pix = page.get_pixmap()
+    page_img = Image.frombytes("RGB", [page_pix.width, page_pix.height], page_pix.samples)
 
-def extract_images_and_captions():
-    """Open the PDF, OCR each page for the caption name, extract images, and map them."""
-    doc = fitz.open(PDF_LOCAL)
-    os.makedirs(OUT_DIR, exist_ok=True)
-    mapping = {}
+    for img_index, img_info in enumerate(images):
+        xref = img_info[0]
+        # 4a) Extract and save the headshot image
+        base_image = doc.extract_image(xref)
+        img_bytes  = base_image["image"]
+        ext        = base_image["ext"]
+        img = Image.open(io.BytesIO(img_bytes))
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
+        img_filename = f"page{page_number+1:02d}_img{img_index+1:02d}.{ext}"
+        img_path     = os.path.join(OUT_DIR, img_filename)
+        img.save(img_path)
+        print(f"📸 Saved headshot {img_path}")
 
-        # 1) Render the page to an image for OCR
-        pix = page.get_pixmap(dpi=DPI)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        text = pytesseract.image_to_string(img)
+        # 4b) Locate the image bbox and crop just below for caption
+        try:
+            bbox = page.get_image_bbox(xref)
+            # extend bbox downwards for caption region (30% of image height)
+            caption_rect = fitz.Rect(
+                bbox.x0,
+                bbox.y1 + 2,
+                bbox.x1,
+                bbox.y1 + bbox.height * 0.3
+            )
+            cap_pix = page.get_pixmap(clip=caption_rect)
+            cap_img = Image.frombytes(
+                "RGB", [cap_pix.width, cap_pix.height], cap_pix.samples
+            )
 
-        # 2) Find the first line that looks like a 'First Last' pattern
-        name = None
-        for line in text.splitlines():
-            line = line.strip()
-            if re.match(r'^[A-Z][a-z]+(?: [A-Z][a-z]+)+$', line):
-                name = line
-                break
-        if not name:
-            name = f"page{page_num+1}"
-            print(f"⚠️  No name OCR’d on page {page_num+1}, using '{name}'")
+            # 4c) OCR the caption region to get the name
+            text = pytesseract.image_to_string(cap_img, config='--psm 7').strip()
+            name = text.splitlines()[0] if text else ''
+            if name:
+                mapping[name] = img_filename
+                print(f"🔖 Mapped '{name}' → {img_filename}")
+            else:
+                print(f"⚠️ No text found for caption of {img_filename}")
+        except Exception as err:
+            print(f"⚠️ OCR failed for {img_filename}: {err}")
 
-        base = sanitize_name(name)
-        mapping[name] = []
-
-        # 3) Extract every image on the page
-        for idx, img_info in enumerate(page.get_images(full=True)):
-            xref = img_info[0]
-            base_image = doc.extract_image(xref)
-            img_bytes  = base_image["image"]
-            ext        = base_image["ext"]  # e.g. 'jpeg'
-
-            filename = f"{base}_{idx+1}.{ext}"
-            out_path = os.path.join(OUT_DIR, filename)
-            with open(out_path, "wb") as f:
-                f.write(img_bytes)
-            print(f"✅ Saved {out_path}")
-            mapping[name].append(filename)
-
-    # 4) Write out the JSON map
-    with open(MAP_FILE, "w") as mf:
-        json.dump(mapping, mf, indent=2)
-    print(f"Mapping written to {MAP_FILE}")
-
-
-if __name__ == "__main__":
-    download_pdf()
-    extract_images_and_captions()
+# 5) Save the name → filename map
+with open(MAPPING_FILE, "w") as f:
+    json.dump(mapping, f, indent=2)
+print(f"✅ Mapping saved to {MAPPING_FILE}")
