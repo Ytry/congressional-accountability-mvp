@@ -1,21 +1,37 @@
-// src/components/LegislatorProfile.jsx
-import React, { useState, useEffect } from 'react'
+
+
+      <section className="space-y-6">
+        <h2 className="text-2xl font-semibold">About</h2>
+        <p>{bio || 'No biographical summary available.'}</p>
+
+        {service_history.length > 0 && (
+          <>
+            <h3 className="text-xl font-semibold">Service History</h3>
+            <ul className="list-disc list-inside">
+              {service_history.map((term, i) => (
+                <li key={i}>
+                  {term.chamber?.charAt(0).toUpperCase() + term.chamber?.slice(1)} (
+                  {term.start_date}{term.end_date ? `–${term.end_date}` : '–present'})
+                </li>
+              ))}
+            </ul>
+          </>
+        )}// src/components/LegislatorProfile.jsx
+import React, { useState, useEffect, useContext } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import axios from 'axios'
-import placeholder from '../assets/placeholder.png'
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+import placeholder from '../assets/placeholder-portrait.png'
+import { ApiContext } from '../App'
 
 export default function LegislatorProfile() {
+  const API_URL    = useContext(ApiContext)
   const { bioguide_id: id } = useParams()
   const [legislator, setLegislator] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [loading, setLoading]         = useState(true)
+  const [error, setError]             = useState('')
 
   useEffect(() => {
-    console.log('[Profile] useParams bioguideId =', id)
     if (!id) {
-      console.error('[Profile] No legislator ID found in route params')
       setError('Invalid legislator ID')
       setLoading(false)
       return
@@ -25,7 +41,6 @@ export default function LegislatorProfile() {
     axios
       .get(`${API_URL}/api/legislators/${id}`)
       .then(({ data }) => {
-        console.log('[Profile] Loaded data for legislator:', data)
         if (!data || Object.keys(data).length === 0) {
           throw new Error('Empty legislator data')
         }
@@ -33,7 +48,6 @@ export default function LegislatorProfile() {
         setError('')
       })
       .catch(err => {
-        console.error('[Profile] Error fetching legislator:', err)
         setError(
           err.response?.status === 404
             ? 'Legislator not found.'
@@ -41,12 +55,11 @@ export default function LegislatorProfile() {
         )
       })
       .finally(() => setLoading(false))
-  }, [id])
+  }, [API_URL, id])
 
   if (loading) {
     return <div className="p-6 text-gray-500">Loading...</div>
   }
-
   if (error) {
     return (
       <div className="p-6 text-center">
@@ -59,19 +72,7 @@ export default function LegislatorProfile() {
     )
   }
 
-  if (!legislator || !legislator.first_name || !legislator.last_name) {
-    console.warn('[Profile] Incomplete legislator data:', legislator)
-    return (
-      <div className="p-6 text-center">
-        <h2 className="text-2xl font-bold text-yellow-600 mb-4">Incomplete Data</h2>
-        <p className="text-lg">The legislator's information appears to be incomplete.</p>
-        <Link to="/legislators" className="text-blue-600 hover:underline mt-4 block">
-          ← Back to all legislators
-        </Link>
-      </div>
-    )
-  }
-
+  // Destructure core fields
   const {
     first_name,
     last_name,
@@ -81,15 +82,12 @@ export default function LegislatorProfile() {
     district,
     start_year,
     end_year,
-    portrait_url,
-    bio = '',
-    service_history = [],
-    committees = [],
-    leadership_positions = [],
-    sponsored_bills = [],
-    finance_summary = {},
-    recent_votes = [],
+    portrait_url
+    // ...other fields
   } = legislator
+
+  // Resolve image src: API‐hosted or placeholder
+  const imgSrc = portrait_url ? `${API_URL}${portrait_url}` : placeholder
 
   return (
     <div className="space-y-8 p-6">
@@ -99,7 +97,7 @@ export default function LegislatorProfile() {
 
       <header className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
         <img
-          src={portrait_url ? `${API_URL}${portrait_url}` : placeholder}
+          src={imgSrc}
           alt={`${first_name} ${last_name}`}
           className="rounded-full w-40 h-40 object-cover shadow"
           onError={e => {
@@ -120,24 +118,6 @@ export default function LegislatorProfile() {
           </p>
         </div>
       </header>
-
-      <section className="space-y-6">
-        <h2 className="text-2xl font-semibold">About</h2>
-        <p>{bio || 'No biographical summary available.'}</p>
-
-        {service_history.length > 0 && (
-          <>
-            <h3 className="text-xl font-semibold">Service History</h3>
-            <ul className="list-disc list-inside">
-              {service_history.map((term, i) => (
-                <li key={i}>
-                  {term.chamber?.charAt(0).toUpperCase() + term.chamber?.slice(1)} (
-                  {term.start_date}{term.end_date ? `–${term.end_date}` : '–present'})
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
 
         {committees.length > 0 && (
           <>
