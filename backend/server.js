@@ -3,16 +3,31 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const path = require('path');             // ← added
+const fs = require('fs');
+const path = require('path');
 const app = express();
 
-// Serve headshots from public/portraits via GET /portraits/:filename.jpg
+// ── DEBUG: list what's in public/portraits ────────────────────────────────
+app.get('/debug/portraits', (req, res) => {
+  const portraitsDir = path.join(process.cwd(), 'public', 'portraits');
+  console.log(`[/debug/portraits] Reading directory: ${portraitsDir}`);
+  try {
+    const files = fs.readdirSync(portraitsDir);
+    console.log(`[/debug/portraits] Found files:`, files);
+    return res.json(files);
+  } catch (err) {
+    console.error('[/debug/portraits] Error reading portraits directory:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Serve headshots from public/portraits via GET /portraits/:filename.jpg ──
 app.use(
   '/portraits',
-  express.static(path.join(__dirname, 'public', 'portraits'))
+  express.static(path.join(process.cwd(), 'public', 'portraits'))
 );
 
- // Define CORS allowed origins from env
+// ── CORS setup ─────────────────────────────────────────────────────────────
 const allowedOrigins = [];
 if (process.env.FRONTEND_ORIGIN) {
   allowedOrigins.push(process.env.FRONTEND_ORIGIN);
@@ -20,25 +35,13 @@ if (process.env.FRONTEND_ORIGIN) {
 if (process.env.ADDITIONAL_ORIGINS) {
   allowedOrigins.push(...process.env.ADDITIONAL_ORIGINS.split(','));
 }
-
-// Dynamic CORS middleware
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // allow same‐origin or server‐to‐server
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      // Allow Vercel preview/production domains
-      if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) {
-        return callback(null, true);
-      }
-      // Allow Render domains
-      if (/^https:\/\/[a-z0-9-]+\.onrender\.com$/.test(origin)) {
-        return callback(null, true);
-      }
-
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) return callback(null, true);
+      if (/^https:\/\/[a-z0-9-]+\.onrender\.com$/.test(origin)) return callback(null, true);
       console.warn(`Blocked CORS request from origin: ${origin}`);
       return callback(new Error('Not allowed by CORS'), false);
     },
@@ -46,28 +49,22 @@ app.use(
   })
 );
 
-// Enable JSON parsing
+// ── JSON parsing ───────────────────────────────────────────────────────────
 app.use(express.json());
 
-// Mount your API routes
-const legislatorsRoute = require('./routes/legislators');
-const votesRoute       = require('./routes/votes');
-const billsRoute       = require('./routes/bills');
-const financeRoute     = require('./routes/finance');
-const etlRoutes        = require('./routes/etl');
+// ── API routes ─────────────────────────────────────────────────────────────
+app.use('/api/etl',        require('./routes/etl'));
+app.use('/api/legislators', require('./routes/legislators'));
+app.use('/api/votes',       require('./routes/votes'));
+app.use('/api/bills',       require('./routes/bills'));
+app.use('/api/finance',     require('./routes/finance'));
 
-app.use('/api/etl',        etlRoutes);
-app.use('/api/legislators', legislatorsRoute);
-app.use('/api/votes',       votesRoute);
-app.use('/api/bills',       billsRoute);
-app.use('/api/finance',     financeRoute);
-
-// Health check
+// ── Health check ───────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.send('Congressional Accountability API is running');
 });
 
-// Start server
+// ── Start server ───────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
