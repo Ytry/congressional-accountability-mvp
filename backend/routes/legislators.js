@@ -33,9 +33,15 @@ router.get('/', async (req, res) => {
       [pageSize, offset]
     )
 
+    // ── OVERRIDE PORTRAIT URL to your local static endpoint ───────────────
+    const items = result.rows.map(row => ({
+      ...row,
+      portrait_url: `/portraits/${row.bioguide_id}.jpg`
+    }))
+
     res.set('X-Total-Count', totalCount)
     return res.json({
-      items: result.rows,
+      items,
       totalCount,
       page,
       pageSize
@@ -82,6 +88,9 @@ router.get('/:bioguide_id', async (req, res) => {
     legislatorId = coreRes.rows[0].id
     const { id, ...clientLeg } = coreRes.rows[0]
     legislator = clientLeg
+
+    // ── OVERRIDE PORTRAIT URL to your local static endpoint ────────────────
+    legislator.portrait_url = `/portraits/${bioguide_id}.jpg`
   } catch (err) {
     console.error(
       'Error running CORE legislator query [SELECT … FROM legislators WHERE bioguide_id = $1]:',
@@ -204,7 +213,7 @@ router.get('/:bioguide_id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch finance summary' })
   }
 
-  // 7) Recent votes (fixed JOIN to use vs.id)
+  // 7) Recent votes
   try {
     const votes = await db.query(
       `
