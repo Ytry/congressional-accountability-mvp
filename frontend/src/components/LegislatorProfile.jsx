@@ -24,9 +24,6 @@ export default function LegislatorProfile() {
     axios
       .get(`${API_URL}/api/legislators/${id}`)
       .then(({ data }) => {
-        if (!data || Object.keys(data).length === 0) {
-          throw new Error('Empty legislator data')
-        }
         setLegislator(data)
         setError('')
       })
@@ -65,7 +62,6 @@ export default function LegislatorProfile() {
     district,
     start_year,
     end_year,
-    portrait_url = '',
     bio = '',
     service_history = [],
     committees = [],
@@ -75,16 +71,8 @@ export default function LegislatorProfile() {
     recent_votes = [],
   } = legislator
 
-  // Build img src:
-  // 1) If absolute URL, use it.
-  // 2) Otherwise prefix relative path with your API_URL.
-  // 3) If empty, fall back to placeholder.
-  let imgSrc = placeholder
-  if (portrait_url) {
-    imgSrc = /^https?:\/\//i.test(portrait_url)
-      ? portrait_url
-      : `${API_URL}${portrait_url}`
-  }
+  // ALWAYS load from your own /portraits endpoint
+  const imgSrc = `${API_URL}/portraits/${id}.jpg`
 
   return (
     <div className="space-y-8 p-6">
@@ -113,8 +101,7 @@ export default function LegislatorProfile() {
           </p>
           <p className="text-sm text-gray-500 mt-1">
             Serving {start_year}
-            {end_year ? `–${end_year}` : '–present'} in the{' '}
-            {chamber?.toUpperCase()}
+            {end_year ? `–${end_year}` : '–present'} in the {chamber?.toUpperCase()}
           </p>
         </div>
       </header>
@@ -129,9 +116,8 @@ export default function LegislatorProfile() {
             <ul className="list-disc list-inside">
               {service_history.map((term, i) => (
                 <li key={i}>
-                  {term.chamber?.charAt(0).toUpperCase() +
-                    term.chamber?.slice(1)}{' '}
-                  ({term.start_date}
+                  {term.chamber?.[0]?.toUpperCase() + term.chamber?.slice(1)} (
+                  {term.start_date}
                   {term.end_date ? `–${term.end_date}` : '–present'})
                 </li>
               ))}
@@ -184,10 +170,7 @@ export default function LegislatorProfile() {
           <ul className="list-disc list-inside">
             {sponsored_bills.map(b => (
               <li key={b.bill_id}>
-                <Link
-                  to={`/bills/${b.bill_id}`}
-                  className="text-blue-600 hover:underline"
-                >
+                <Link to={`/bills/${b.bill_id}`} className="text-blue-600 hover:underline">
                   {b.bill_id}: {b.title}
                 </Link>{' '}
                 ({b.date}, {b.status})
@@ -208,9 +191,7 @@ export default function LegislatorProfile() {
               <p className="text-xl">
                 ${finance_summary.total_contributions.toLocaleString()}
               </p>
-              <p className="text-sm text-gray-600">
-                Cycle: {finance_summary.cycle}
-              </p>
+              <p className="text-sm text-gray-600">Cycle: {finance_summary.cycle}</p>
             </div>
             <div className="border rounded p-4 shadow-sm">
               <h3 className="font-semibold">Top Industries</h3>
