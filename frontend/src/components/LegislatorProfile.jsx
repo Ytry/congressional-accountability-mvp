@@ -8,6 +8,7 @@ import { ApiContext } from '../App'
 export default function LegislatorProfile() {
   const API_URL = useContext(ApiContext)
   const { bioguide_id: id } = useParams()
+
   const [legislator, setLegislator] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -64,7 +65,7 @@ export default function LegislatorProfile() {
     district,
     start_year,
     end_year,
-    portrait_url,
+    portrait_url = '',
     bio = '',
     service_history = [],
     committees = [],
@@ -74,17 +75,15 @@ export default function LegislatorProfile() {
     recent_votes = [],
   } = legislator
 
-  // Determine img src with priority:
-  // 1) Absolute URL from portrait_url
-  // 2) Relative URL: prefix with API_URL
-  // 3) Fallback to placeholder
+  // Build img src:
+  // 1) If absolute URL, use it.
+  // 2) Otherwise prefix relative path with your API_URL.
+  // 3) If empty, fall back to placeholder.
   let imgSrc = placeholder
   if (portrait_url) {
-    if (/^https?:\/\//i.test(portrait_url)) {
-      imgSrc = portrait_url
-    } else {
-      imgSrc = `${API_URL}${portrait_url}`
-    }
+    imgSrc = /^https?:\/\//i.test(portrait_url)
+      ? portrait_url
+      : `${API_URL}${portrait_url}`
   }
 
   return (
@@ -97,6 +96,7 @@ export default function LegislatorProfile() {
         <img
           src={imgSrc}
           alt={`${first_name} ${last_name}`}
+          loading="lazy"
           className="rounded-full w-40 h-40 object-cover shadow"
           onError={e => {
             e.currentTarget.onerror = null
@@ -112,7 +112,9 @@ export default function LegislatorProfile() {
             {chamber === 'house' && district ? ` · District ${district}` : ''}
           </p>
           <p className="text-sm text-gray-500 mt-1">
-            Serving {start_year}{end_year ? `–${end_year}` : '–present'} in the {chamber?.toUpperCase()}
+            Serving {start_year}
+            {end_year ? `–${end_year}` : '–present'} in the{' '}
+            {chamber?.toUpperCase()}
           </p>
         </div>
       </header>
@@ -127,8 +129,10 @@ export default function LegislatorProfile() {
             <ul className="list-disc list-inside">
               {service_history.map((term, i) => (
                 <li key={i}>
-                  {term.chamber?.charAt(0).toUpperCase() + term.chamber?.slice(1)} (
-                  {term.start_date}{term.end_date ? `–${term.end_date}` : '–present'})
+                  {term.chamber?.charAt(0).toUpperCase() +
+                    term.chamber?.slice(1)}{' '}
+                  ({term.start_date}
+                  {term.end_date ? `–${term.end_date}` : '–present'})
                 </li>
               ))}
             </ul>
@@ -165,7 +169,8 @@ export default function LegislatorProfile() {
             <ul className="list-disc list-inside">
               {leadership_positions.map((pos, i) => (
                 <li key={i}>
-                  {pos.title} ({pos.start_date}{pos.end_date ? `–${pos.end_date}` : '–present'})
+                  {pos.title} ({pos.start_date}
+                  {pos.end_date ? `–${pos.end_date}` : '–present'})
                 </li>
               ))}
             </ul>
@@ -175,11 +180,14 @@ export default function LegislatorProfile() {
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold">Sponsored Bills</h2>
-        {Array.isArray(sponsored_bills) && sponsored_bills.length ? (
+        {sponsored_bills.length > 0 ? (
           <ul className="list-disc list-inside">
             {sponsored_bills.map(b => (
               <li key={b.bill_id}>
-                <Link to={`/bills/${b.bill_id}`} className="text-blue-600 hover:underline">
+                <Link
+                  to={`/bills/${b.bill_id}`}
+                  className="text-blue-600 hover:underline"
+                >
                   {b.bill_id}: {b.title}
                 </Link>{' '}
                 ({b.date}, {b.status})
@@ -200,7 +208,9 @@ export default function LegislatorProfile() {
               <p className="text-xl">
                 ${finance_summary.total_contributions.toLocaleString()}
               </p>
-              <p className="text-sm text-gray-600">Cycle: {finance_summary.cycle}</p>
+              <p className="text-sm text-gray-600">
+                Cycle: {finance_summary.cycle}
+              </p>
             </div>
             <div className="border rounded p-4 shadow-sm">
               <h3 className="font-semibold">Top Industries</h3>
@@ -220,7 +230,7 @@ export default function LegislatorProfile() {
 
       <section className="space-y-4">
         <h2 className="text-2xl font-semibold">Recent Votes</h2>
-        {Array.isArray(recent_votes) && recent_votes.length ? (
+        {recent_votes.length > 0 ? (
           <table className="w-full text-left border-collapse">
             <thead>
               <tr>
@@ -254,5 +264,5 @@ export default function LegislatorProfile() {
         )}
       </section>
     </div>
-  );
+  )
 }
