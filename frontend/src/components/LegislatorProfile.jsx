@@ -71,8 +71,9 @@ export default function LegislatorProfile() {
     recent_votes = [],
   } = legislator
 
-  // ALWAYS load from your own /portraits endpoint
-  const imgSrc = `${API_URL}/portraits/${id}.jpg`
+  // Build the portrait URL against your backend, then fallback on error
+  const baseUrl = (API_URL || window.location.origin).replace(/\/$/, '')
+  const remotePortrait = `${baseUrl}/portraits/${id}.jpg`
 
   return (
     <div className="space-y-8 p-6">
@@ -82,12 +83,13 @@ export default function LegislatorProfile() {
 
       <header className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
         <img
-          src={imgSrc}
+          src={remotePortrait}
           alt={`${first_name} ${last_name}`}
           loading="lazy"
           className="rounded-full w-40 h-40 object-cover shadow"
           onError={e => {
             e.currentTarget.onerror = null
+            // If the backend 404s or times out, show the placeholder
             e.currentTarget.src = placeholder
           }}
         />
