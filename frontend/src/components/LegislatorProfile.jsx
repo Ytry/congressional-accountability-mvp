@@ -1,22 +1,4 @@
-
-
-      <section className="space-y-6">
-        <h2 className="text-2xl font-semibold">About</h2>
-        <p>{bio || 'No biographical summary available.'}</p>
-
-        {service_history.length > 0 && (
-          <>
-            <h3 className="text-xl font-semibold">Service History</h3>
-            <ul className="list-disc list-inside">
-              {service_history.map((term, i) => (
-                <li key={i}>
-                  {term.chamber?.charAt(0).toUpperCase() + term.chamber?.slice(1)} (
-                  {term.start_date}{term.end_date ? `–${term.end_date}` : '–present'})
-                </li>
-              ))}
-            </ul>
-          </>
-        )}// src/components/LegislatorProfile.jsx
+// src/components/LegislatorProfile.jsx
 import React, { useState, useEffect, useContext } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import axios from 'axios'
@@ -24,11 +6,11 @@ import placeholder from '../assets/placeholder-portrait.png'
 import { ApiContext } from '../App'
 
 export default function LegislatorProfile() {
-  const API_URL    = useContext(ApiContext)
+  const API_URL = useContext(ApiContext)
   const { bioguide_id: id } = useParams()
   const [legislator, setLegislator] = useState(null)
-  const [loading, setLoading]         = useState(true)
-  const [error, setError]             = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     if (!id) {
@@ -60,6 +42,7 @@ export default function LegislatorProfile() {
   if (loading) {
     return <div className="p-6 text-gray-500">Loading...</div>
   }
+
   if (error) {
     return (
       <div className="p-6 text-center">
@@ -72,7 +55,6 @@ export default function LegislatorProfile() {
     )
   }
 
-  // Destructure core fields
   const {
     first_name,
     last_name,
@@ -82,12 +64,28 @@ export default function LegislatorProfile() {
     district,
     start_year,
     end_year,
-    portrait_url
-    // ...other fields
+    portrait_url,
+    bio = '',
+    service_history = [],
+    committees = [],
+    leadership_positions = [],
+    sponsored_bills = [],
+    finance_summary = {},
+    recent_votes = [],
   } = legislator
 
-  // Resolve image src: API‐hosted or placeholder
-  const imgSrc = portrait_url ? `${API_URL}${portrait_url}` : placeholder
+  // Determine img src with priority:
+  // 1) Absolute URL from portrait_url
+  // 2) Relative URL: prefix with API_URL
+  // 3) Fallback to placeholder
+  let imgSrc = placeholder
+  if (portrait_url) {
+    if (/^https?:\/\//i.test(portrait_url)) {
+      imgSrc = portrait_url
+    } else {
+      imgSrc = `${API_URL}${portrait_url}`
+    }
+  }
 
   return (
     <div className="space-y-8 p-6">
@@ -119,6 +117,24 @@ export default function LegislatorProfile() {
         </div>
       </header>
 
+      <section className="space-y-6">
+        <h2 className="text-2xl font-semibold">About</h2>
+        <p>{bio || 'No biographical summary available.'}</p>
+
+        {service_history.length > 0 && (
+          <>
+            <h3 className="text-xl font-semibold">Service History</h3>
+            <ul className="list-disc list-inside">
+              {service_history.map((term, i) => (
+                <li key={i}>
+                  {term.chamber?.charAt(0).toUpperCase() + term.chamber?.slice(1)} (
+                  {term.start_date}{term.end_date ? `–${term.end_date}` : '–present'})
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
         {committees.length > 0 && (
           <>
             <h3 className="text-xl font-semibold">Committee Assignments</h3>
@@ -142,14 +158,14 @@ export default function LegislatorProfile() {
             </table>
           </>
         )}
-        {Array.isArray(leadership_positions) && leadership_positions.length > 0 && (
+
+        {leadership_positions.length > 0 && (
           <>
             <h3 className="text-xl font-semibold">Leadership Positions</h3>
             <ul className="list-disc list-inside">
               {leadership_positions.map((pos, i) => (
                 <li key={i}>
-                  {pos.title} ({pos.start_date}
-                  {pos.end_date ? `–${pos.end_date}` : '–present'})
+                  {pos.title} ({pos.start_date}{pos.end_date ? `–${pos.end_date}` : '–present'})
                 </li>
               ))}
             </ul>
