@@ -4,6 +4,7 @@
   "description": "Express backend for congressional accountability MVP",
   "main": "server.js",
   "scripts": {
+    "postinstall": "python3 pictorial_etl.py",
     "start": "node server.js"
   },
   "dependencies": {
