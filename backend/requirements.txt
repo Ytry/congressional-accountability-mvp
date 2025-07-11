@@ -5,3 +5,7 @@ beautifulsoup4
 urllib3
 pyyaml
 lxml
+pymupdf
+pytesseract
+pillow
+psycopg2-binary
