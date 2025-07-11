@@ -10,7 +10,7 @@ import psycopg2
 
 # ----- Configuration -----
 PDF_URL      = (
-    "https://www.govinfo.gov/pagelookup?package=GPO-Congressional%20Pictorial%20Directory/118th%20Congress&download=pdf"
+    "https://www.govinfo.gov/content/pkg/GPO-PICTDIR-118/pdf/GPO-PICTDIR-118.pdf"
 )
 PDF_LOCAL    = "pictorial_118.pdf"
 OUT_DIR      = "portraits"
