@@ -13,7 +13,7 @@ PDF_URL      = (
     "https://www.govinfo.gov/content/pkg/GPO-PICTDIR-118/pdf/GPO-PICTDIR-118.pdf"
 )
 PDF_LOCAL    = "pictorial_118.pdf"
-OUT_DIR      = "portraits"
+OUT_DIR      = "public/portraits"
 MAPPING_FILE = "name_mapping.json"
 DB_ENV_VAR   = "DATABASE_URL"
 
