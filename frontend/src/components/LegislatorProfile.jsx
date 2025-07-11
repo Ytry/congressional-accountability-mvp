@@ -162,9 +162,6 @@ export default function LegislatorProfile() {
             </table>
           </>
         )}
-
-        {/* ... rest of profile sections unchanged ... */}
-      </section>
         {Array.isArray(leadership_positions) && leadership_positions.length > 0 && (
           <>
             <h3 className="text-xl font-semibold">Leadership Positions</h3>
