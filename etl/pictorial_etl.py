@@ -2,53 +2,46 @@
 """
 pictorial_etl.py
 
-– GET legislators‑current.json → build pictorial→bioguide map
+– GET legislators-current.json → build pictorial→bioguide map
 – GET GPO Pictorial API for 118th Congress members
 – Download each imageUrl → portraits/{bioguide}.jpg
 – Write debug report
 – UPDATE legislators.portrait_url in Postgres
 """
-
-import os
 import sys
 import json
 import requests
 import psycopg2
 from logger import setup_logger
+import config
 
 # Initialize structured logger
 logger = setup_logger("pictorial_etl")
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-SCRIPT_DIR   = os.path.dirname(__file__)
-LEGIS_URL    = "https://unitedstates.github.io/congress-legislators/legislators-current.json"
-GPO_API_URL  = "https://pictorialapi.gpo.gov/api/GuideMember/GetMembers/118"
-BACKEND_DIR  = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "backend"))
-OUT_DIR      = os.path.abspath(os.path.join(BACKEND_DIR, "..", "portraits"))
-DEBUG_JSON   = os.path.join(SCRIPT_DIR, "pictorial_etl_debug.json")
-DB_ENV_VAR   = "DATABASE_URL"
+LEGIS_URL   = config.LEGIS_JSON_URL
+GPO_API_URL = config.GPO_API_URL
+OUT_DIR     = config.PORTRAITS_DIR
+DEBUG_JSON  = config.PICT_DEBUG_JSON
+DB_URL      = config.DATABASE_URL
 
 # Ensure output directory exists
-os.makedirs(OUT_DIR, exist_ok=True)
-logger.info("Output directory ready", extra={"out_dir": OUT_DIR})
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+logger.info("Output directory ready", extra={"out_dir": str(OUT_DIR)})
 
 # ─── 1) Build pictorial_id → bioguide_id map ────────────────────────────────
 try:
-    resp = requests.get(LEGIS_URL, timeout=15)
+    resp = requests.get(LEGIS_URL, timeout=config.HTTP_TIMEOUT)
     resp.raise_for_status()
     legislators = resp.json()
     logger.info("Fetched legislators list", extra={"source": LEGIS_URL, "count": len(legislators)})
 except Exception:
-    logger.exception("Failed to fetch legislators-current.json")
+    logger.exception("Failed to fetch legislators list from JSON endpoint")
     sys.exit(1)
 
-pict2bio = {}
-for person in legislators:
-    ids = person.get("id", {})
-    pict = ids.get("pictorial")
-    bio  = ids.get("bioguide")
-    if pict and bio:
-        pict2bio[str(pict)] = bio
+pict2bio = {str(p.get("id", {}).get("pictorial")): p.get("id", {}).get("bioguide")
+            for p in legislators
+            if p.get("id", {}).get("pictorial") and p.get("id", {}).get("bioguide")}
 
 if not pict2bio:
     logger.error("No pictorial→bioguide mappings found")
@@ -57,12 +50,12 @@ logger.info("Built pict2bio map", extra={"mappings": len(pict2bio)})
 
 # ─── 2) Fetch GPO Pictorial API ──────────────────────────────────────────────
 try:
-    resp = requests.get(GPO_API_URL, timeout=15)
+    resp = requests.get(GPO_API_URL, timeout=config.HTTP_TIMEOUT)
     resp.raise_for_status()
     members = resp.json().get("memberCollection", [])
     logger.info("Fetched GPO member collection", extra={"api_url": GPO_API_URL, "count": len(members)})
 except Exception:
-    logger.exception("Failed to fetch GPO Pictorial API")
+    logger.exception("Failed to fetch GPO Pictorial API data")
     sys.exit(1)
 
 # ─── 3) Download each headshot ───────────────────────────────────────────────
@@ -78,9 +71,9 @@ for m in members:
         failed.append(pict_id)
         continue
 
-    out_path = os.path.join(OUT_DIR, f"{bio_id}.jpg")
+    out_path = OUT_DIR / f"{bio_id}.jpg"
     try:
-        r = requests.get(img_url, stream=True, timeout=15)
+        r = requests.get(img_url, stream=True, timeout=config.HTTP_TIMEOUT)
         r.raise_for_status()
         if "image" not in r.headers.get("Content-Type", ""):
             raise ValueError("Content-Type not image")
@@ -97,18 +90,17 @@ for m in members:
 try:
     with open(DEBUG_JSON, "w") as df:
         json.dump({"downloaded": downloaded, "failed": failed}, df, indent=2)
-    logger.info("Wrote debug JSON report", extra={"path": DEBUG_JSON, "downloaded": len(downloaded), "failed": len(failed)})
+    logger.info("Wrote debug JSON report", extra={"path": str(DEBUG_JSON), "downloaded": len(downloaded), "failed": len(failed)})
 except Exception:
     logger.exception("Failed to write debug JSON report")
 
 # ─── 5) Update Postgres legislators.portrait_url ──────────────────────────────
-db_url = os.getenv(DB_ENV_VAR)
-if not db_url:
+if not DB_URL:
     logger.info("DATABASE_URL not set; skipping DB update")
     sys.exit(0)
 
 try:
-    conn = psycopg2.connect(db_url)
+    conn = psycopg2.connect(DB_URL)
     cur  = conn.cursor()
     updated_count = 0
     for bio_id in downloaded:
@@ -123,5 +115,5 @@ try:
     conn.close()
     logger.info("Database portrait_url update complete", extra={"updated_records": updated_count})
 except Exception:
-    logger.exception("Failed to update database portraits")
+    logger.exception("Failed to update database portrait URLs")
     sys.exit(1)
