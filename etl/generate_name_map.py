@@ -1,50 +1,49 @@
 #!/usr/bin/env python3
-import os
-import requests
-import json
-import logging
+"""
+generate_name_map.py
+
+Fetch the current legislators JSON and build a mapping of full Senate member names to Bioguide IDs.
+Writes to a default path from config.NAME_TO_BIO_MAP or an optional CLI argument.
+"""
 import sys
+import json
+from pathlib import Path
+import requests
+import config
+from logger import setup_logger
 
-# URL for the official GitHub JSON of current legislators
-CURRENT_URL = (
-    "https://unitedstates.github.io/congress-legislators/legislators-current.json"
-)
+# Initialize structured logger
+logger = setup_logger("generate_name_map")
+
+# Configuration
+LEGIS_URL = config.LEGIS_JSON_URL
+TIMEOUT = config.HTTP_TIMEOUT
+OUTPUT_DEFAULT = config.NAME_TO_BIO_MAP
 
 
-def fetch_legislators(url):
-    """
-    Fetch the legislators JSON from the provided URL.
-    """
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-    return r.json()
+def fetch_legislators(url: str):
+    logger.info("Fetching legislators JSON", extra={"url": url})
+    try:
+        resp = requests.get(url, timeout=TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        logger.exception("Failed to fetch legislators JSON")
+        raise
 
 
-def build_name_to_bioguide(output_path=None):
-    """
-    Build a mapping of full names to Bioguide IDs for current senators.
+def build_name_to_bioguide(output_path: Path):
+    logger.info("Building name_to_bioguide mapping", extra={"output_path": str(output_path)})
+    try:
+        legislators = fetch_legislators(LEGIS_URL)
+    except Exception:
+        logger.error("Aborting name_map build due to fetch error")
+        sys.exit(1)
 
-    If output_path is None, write to name_to_bioguide.json next to this script.
-    """
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s: %(message)s"
-    )
-
-    # Determine output file location
-    if output_path is None:
-        script_dir = os.path.dirname(__file__)
-        output_path = os.path.join(script_dir, "name_to_bioguide.json")
-
-    logging.info(f"Writing mapping to {output_path}")
-    name_to_biog = {}
-
-    # Fetch and filter only those with a Senate term
-    legislators = fetch_legislators(CURRENT_URL)
+    mapping = {}
     for person in legislators:
         terms = person.get("terms", [])
-        # Only include if they have served in the Senate
+        # Only include those with a Senate term
         if not any(t.get("type") == "sen" for t in terms):
             continue
 
@@ -52,29 +51,33 @@ def build_name_to_bioguide(output_path=None):
         if not biog_id:
             continue
 
-        first = person.get("name", {}).get("first", "")
-        middle = person.get("name", {}).get("middle", "")
-        last = person.get("name", {}).get("last", "")
-
-        # Build full name
-        parts = [first]
-        if middle:
-            parts.append(middle)
-        if last:
-            parts.append(last)
-        full_name = " ".join(parts).strip()
-
+        # Construct full name (first, middle, last)
+        name = person.get("name", {})
+        parts = [name.get(k, "") for k in ("first", "middle", "last")]
+        full_name = " ".join([p for p in parts if p]).strip()
         if full_name:
-            name_to_biog[full_name] = biog_id
+            mapping[full_name] = biog_id
 
-    # Write out the mapping
-    with open(output_path, "w") as f:
-        json.dump(name_to_biog, f, indent=2)
-
-    logging.info(f"Wrote {len(name_to_biog)} entries")
+    # Write mapping to file
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(mapping, f, indent=2)
+        logger.info("Wrote name_to_bioguide file", extra={"entries": len(mapping)})
+    except Exception:
+        logger.exception("Failed to write name_to_bioguide file")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    # Allow optional custom output path via CLI
-    user_path = sys.argv[1] if len(sys.argv) > 1 else None
-    build_name_to_bioguide(user_path)
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate mapping of Senate member names to Bioguide IDs")
+    parser.add_argument(
+        "output",
+        nargs='?', 
+        type=str,
+        default=str(OUTPUT_DEFAULT),
+        help="Output path for name_to_bioguide.json"
+    )
+    args = parser.parse_args()
+    build_name_to_bioguide(Path(args.output))
