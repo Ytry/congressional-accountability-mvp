@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('./utils/logger');
 const correlationId = require('./utils/correlation');
+const expressWinston = require('express-winston');
 
 const app = express();
 
@@ -15,6 +16,21 @@ const PORTRAITS_DIR = path.join(__dirname, '..', 'portraits');
 // ── Correlation middleware for centralized logging ─────────────────────────
 app.use(correlationId);
 
+// ── Express-Winston HTTP request logging ──────────────────────────────────
+app.use(expressWinston.logger({
+  winstonInstance: logger,
+  meta: true,                             // log metadata (headers, query, body)
+  msg: 'HTTP {{req.method}} {{req.url}}',
+  expressFormat: false,
+  colorize: false,
+  dynamicMeta: (req, res) => ({          // include correlation and context
+    correlationId: req.correlationId,
+    method: req.method,
+    url: req.originalUrl,
+    statusCode: res.statusCode
+  })
+}));
+
 // ── CORS setup with logging ───────────────────────────────────────────────
 const allowedOrigins = [];
 if (process.env.FRONTEND_ORIGIN)    allowedOrigins.push(process.env.FRONTEND_ORIGIN);
@@ -22,7 +38,7 @@ if (process.env.ADDITIONAL_ORIGINS) allowedOrigins.push(...process.env.ADDITIONA
 
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin) return cb(null, true);               // allow server‑to‑server or same‑origin
+    if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     if (/\.vercel\.app$/.test(origin))  return cb(null, true);
     if (/\.onrender\.com$/.test(origin)) return cb(null, true);
@@ -63,6 +79,17 @@ app.get('/', (req, res) => {
   req.logger.info('Health check', { path: '/' });
   res.send('Congressional Accountability API is running');
 });
+
+// ── Express-Winston error logging ─────────────────────────────────────────
+app.use(expressWinston.errorLogger({
+  winstonInstance: logger,
+  meta: false,
+  msg: 'ERROR {{err.message}}',
+  dynamicMeta: (req, res, err) => ({
+    correlationId: req.correlationId,
+    stack: err.stack
+  })
+}));
 
 // ── Global error handler ──────────────────────────────────────────────────
 app.use((err, req, res, next) => {
