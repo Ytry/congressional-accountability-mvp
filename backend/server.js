@@ -9,7 +9,7 @@ const app     = express();
 
 // ── Compute the true path to the shared portraits folder ────────────────────
 // __dirname === /opt/render/project/src/backend
-const PORTRAITS_DIR = path.join(__dirname, '..', 'public', 'portraits');
+const PORTRAITS_DIR = path.join(__dirname, '..', 'portraits');
 
 // ── DEBUG: List what’s actually in that folder ─────────────────────────────
 app.get('/debug/portraits', (req, res) => {
