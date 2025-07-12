@@ -4,7 +4,6 @@
 import os
 import json
 import logging
-from datetime import datetime
 from typing import Optional, List
 
 import requests
@@ -60,9 +59,9 @@ def fetch_yaml_data(url: str) -> List[dict]:
 
 
 def parse_legislator(raw) -> Optional[dict]:
-    ids = raw.get("id", {})
+    ids = raw.get("id") or {}
     bioguide = ids.get("bioguide")
-    terms = raw.get("terms", [])
+    terms = raw.get("terms") or []
     if not bioguide or not terms:
         return None
 
@@ -79,13 +78,18 @@ def parse_legislator(raw) -> Optional[dict]:
     if not chamber:
         return None
 
-    name = raw.get("name", {})
+    name = raw.get("name") or {}
     first = name.get("first", "")
     last_name = name.get("last", "")
     full_name = f"{first} {last_name}".strip()
 
+    # Safe bio defaults
+    bio = raw.get("bio") or {}
+    birthday = bio.get("birthday", "")
+    gender = bio.get("gender", "")
+    bio_snip = f"{birthday} – {gender}" if (birthday or gender) else ""
+
     contact = {"address": current_term.get("address"), "phone": current_term.get("phone")}
-    bio_snip = f"{raw.get('bio', {{}}).get('birthday', '')} – {raw.get('bio', {{}}).get('gender', '')}"
 
     return {
         "bioguide_id":          bioguide,
@@ -93,8 +97,8 @@ def parse_legislator(raw) -> Optional[dict]:
         "first_name":           first,
         "last_name":            last_name,
         "full_name":            full_name,
-        "gender":               raw.get("bio", {{}}).get("gender"),
-        "birthday":             raw.get("bio", {{}}).get("birthday"),
+        "gender":               gender,
+        "birthday":             birthday,
         "party":                current_term.get("party"),
         "state":                current_term.get("state"),
         "district":             current_term.get("district") if current_term.get("type") == "rep" else None,
@@ -139,7 +143,6 @@ def insert_legislator(cur, leg):
     )
     return cur.fetchone()[0]
 
-# ... insert_service_history, insert_committee_roles, insert_leadership_roles unchanged
 
 def insert_service_history(cur, legislator_id, terms):
     records = []
