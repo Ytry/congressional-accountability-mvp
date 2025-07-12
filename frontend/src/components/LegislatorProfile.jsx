@@ -1,12 +1,11 @@
-// src/components/LegislatorProfile.jsx
 import React, { useState, useEffect, useContext } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import axios from 'axios'
-import placeholder from '../assets/placeholder-portrait.png'
 import { ApiContext } from '../App'
 
 export default function LegislatorProfile() {
-  const API_URL = useContext(ApiContext)
+  // Always use the backend URL without trailing slash
+  const API_URL = useContext(ApiContext).replace(/\/$/, '')
   const { bioguide_id: id } = useParams()
 
   const [legislator, setLegislator] = useState(null)
@@ -71,9 +70,8 @@ export default function LegislatorProfile() {
     recent_votes = [],
   } = legislator
 
-  // Build the portrait URL against your backend, then fallback on error
-  const baseUrl = (API_URL || window.location.origin).replace(/\/$/, '')
-  const remotePortrait = `${baseUrl}/portraits/${id}.jpg`
+  // Only load image from backend; no fallback
+  const portraitUrl = `${API_URL}/portraits/${id}.jpg`
 
   return (
     <div className="space-y-8 p-6">
@@ -83,15 +81,10 @@ export default function LegislatorProfile() {
 
       <header className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
         <img
-          src={remotePortrait}
+          src={portraitUrl}
           alt={`${first_name} ${last_name}`}
           loading="lazy"
           className="rounded-full w-40 h-40 object-cover shadow"
-          onError={e => {
-            e.currentTarget.onerror = null
-            // If the backend 404s or times out, show the placeholder
-            e.currentTarget.src = placeholder
-          }}
         />
         <div>
           <h1 className="text-3xl font-bold">
