@@ -22,18 +22,16 @@ PORTRAITS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Database Configuration ────────────────────────────────────────────────────
 # Support DATABASE_URL or individual credentials
-dbp_url           = os.getenv("DATABASE_URL")
-DB_NAME           = os.getenv("DB_NAME")
-DB_USER           = os.getenv("DB_USER")
-DB_PASSWORD       = os.getenv("DB_PASSWORD")
-DB_HOST           = os.getenv("DB_HOST")
-DB_PORT           = os.getenv("DB_PORT")
+DATABASE_URL   = os.getenv("DATABASE_URL")
+DB_NAME        = os.getenv("DB_NAME")
+DB_USER        = os.getenv("DB_USER")
+DB_PASSWORD    = os.getenv("DB_PASSWORD")
+DB_HOST        = os.getenv("DB_HOST")
+DB_PORT        = os.getenv("DB_PORT")
+DB_POOL_MIN    = int(os.getenv("DB_POOL_MIN", 1))
+DB_POOL_MAX    = int(os.getenv("DB_POOL_MAX", 5))
 
-# Connection pool sizing
-DB_POOL_MIN       = int(os.getenv("DB_POOL_MIN", 1))
-DB_POOL_MAX       = int(os.getenv("DB_POOL_MAX", 5))
-
-# ── HTTP / API Settings ───────────────────────────────────────────────────────
+# ── HTTP / API Settings ─────────────────────────────────────────────────────── ───────────────────────────────────────────────────────
 HTTP_TIMEOUT      = float(os.getenv("HTTP_TIMEOUT", 15.0))
 HTTP_MAX_RETRIES  = int(os.getenv("HTTP_MAX_RETRIES", 3))
 HTTP_RETRY_DELAY  = float(os.getenv("HTTP_RETRY_DELAY", 0.5))
