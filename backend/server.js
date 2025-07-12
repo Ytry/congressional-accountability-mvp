@@ -3,8 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const logger = require('./utils/logger');
-const correlationId = require('./utils/correlation');
+const logger = require('../utils/logger');
+const correlationId = require('../utils/correlation');
 const expressWinston = require('express-winston');
 
 const app = express();
@@ -19,11 +19,11 @@ app.use(correlationId);
 // ── Express-Winston HTTP request logging ──────────────────────────────────
 app.use(expressWinston.logger({
   winstonInstance: logger,
-  meta: true,                             // log metadata (headers, query, body)
+  meta: true,
   msg: 'HTTP {{req.method}} {{req.url}}',
   expressFormat: false,
   colorize: false,
-  dynamicMeta: (req, res) => ({          // include correlation and context
+  dynamicMeta: (req, res) => ({
     correlationId: req.correlationId,
     method: req.method,
     url: req.originalUrl,
