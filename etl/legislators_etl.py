@@ -2,42 +2,50 @@
 """
 legislators_etl.py — ETL for current Congress legislators only, with connection pooling and structured JSON logging
 """
-import os
 import json
 from typing import Optional, List
-
-import requests
 import yaml
+import requests
 import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
-from dotenv import load_dotenv
 
+import config
 from logger import setup_logger
 
-# ── CONFIG & LOGGING ─────────────────────────────────────────────────────────
-load_dotenv()
+# Initialize structured logger
 logger = setup_logger("legislators_etl")
 
-# Database credentials from environment
-DB = {
-    "dbname":   os.getenv("DB_NAME"),
-    "user":     os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host":     os.getenv("DB_HOST"),
-    "port":     os.getenv("DB_PORT"),
-}
-
 # ── CONNECTION POOL ───────────────────────────────────────────────────────────
-conn_pool = ThreadedConnectionPool(minconn=1, maxconn=5, **DB)
+try:
+    if config.DATABASE_URL:
+        conn_pool = ThreadedConnectionPool(
+            minconn=config.DB_POOL_MIN,
+            maxconn=config.DB_POOL_MAX,
+            dsn=config.DATABASE_URL
+        )
+    else:
+        conn_pool = ThreadedConnectionPool(
+            minconn=config.DB_POOL_MIN,
+            maxconn=config.DB_POOL_MAX,
+            database=config.DB_NAME,
+            user=config.DB_USER,
+            password=config.DB_PASSWORD,
+            host=config.DB_HOST,
+            port=config.DB_PORT
+        )
+    logger.info("Connection pool created", extra={"minconn": config.DB_POOL_MIN, "maxconn": config.DB_POOL_MAX})
+except Exception:
+    logger.exception("Failed to create connection pool")
+    raise
 
 @contextmanager
 def get_conn():
     conn = conn_pool.getconn()
     try:
         yield conn
-n    finally:
+    finally:
         conn_pool.putconn(conn)
 
 @contextmanager
@@ -47,16 +55,13 @@ def get_cursor():
             yield conn, cur
 
 # ── SOURCE: CURRENT MEMBERS ─────────────────────────────────────────────────
-CURRENT_URL = (
-    "https://raw.githubusercontent.com/unitedstates/congress-legislators/"
-    "main/legislators-current.yaml"
-)
+CURRENT_URL = config.LEGIS_YAML_URL
 
 # ── FETCH & PARSE ────────────────────────────────────────────────────────────
 
 def fetch_yaml_data(url: str) -> List[dict]:
     logger.info("Downloading YAML data", extra={"url": url})
-    resp = requests.get(url, timeout=10)
+    resp = requests.get(url, timeout=config.HTTP_TIMEOUT)
     resp.raise_for_status()
     data = yaml.safe_load(resp.text)
     logger.info("YAML data parsed", extra={"records": len(data)})
@@ -75,7 +80,11 @@ def parse_legislator(raw) -> Optional[dict]:
     valid.sort(key=lambda t: t["start"], reverse=True)
     term = valid[0]
 
-    chamber = "House" if term.get("type") == "rep" else "Senate" if term.get("type") == "sen" else None
+    chamber = (
+        "House" if term.get("type") == "rep" else
+        "Senate" if term.get("type") == "sen" else
+        None
+    )
     if not chamber:
         return None
 
@@ -113,10 +122,11 @@ def parse_legislator(raw) -> Optional[dict]:
 def insert_legislator(cur, leg):
     cur.execute(
         """
-        INSERT INTO legislators (bioguide_id, icpsr_id, first_name, last_name, full_name,
-                                 gender, birthday, party, state, district, chamber,
-                                 portrait_url, official_website_url, office_contact, bio_snapshot)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        INSERT INTO legislators (
+          bioguide_id, icpsr_id, first_name, last_name, full_name,
+          gender, birthday, party, state, district, chamber,
+          portrait_url, official_website_url, office_contact, bio_snapshot
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
         ON CONFLICT (bioguide_id) DO UPDATE SET
           icpsr_id = EXCLUDED.icpsr_id,
           first_name = EXCLUDED.first_name,
@@ -157,13 +167,13 @@ def insert_service_history(cur, legislator_id, terms):
     psycopg2.extras.execute_values(
         cur,
         """
-        INSERT INTO service_history (legislator_id, start_date, end_date, chamber, state, district, party)
-        VALUES %s ON CONFLICT (legislator_id, start_date) DO NOTHING;
+        INSERT INTO service_history (
+          legislator_id, start_date, end_date, chamber, state, district, party
+        ) VALUES %s ON CONFLICT (legislator_id, start_date) DO NOTHING;
         """,
         records,
         page_size=100
     )
-
 
 
 def insert_committee_roles(cur, legislator_id, terms):
@@ -180,8 +190,9 @@ def insert_committee_roles(cur, legislator_id, terms):
     psycopg2.extras.execute_values(
         cur,
         """
-        INSERT INTO committee_assignments (legislator_id, congress, committee_name, subcommittee_name, role)
-        VALUES %s ON CONFLICT (legislator_id, congress, committee_name, subcommittee_name) DO NOTHING;
+        INSERT INTO committee_assignments (
+          legislator_id, congress, committee_name, subcommittee_name, role
+        ) VALUES %s ON CONFLICT (legislator_id, congress, committee_name, subcommittee_name) DO NOTHING;
         """,
         records,
         page_size=100
@@ -189,8 +200,10 @@ def insert_committee_roles(cur, legislator_id, terms):
 
 
 def insert_leadership_roles(cur, legislator_id, terms):
-    records = [(legislator_id, t.get("congress"), t.get("leadership_title"))
-               for t in terms if t.get("leadership_title")]
+    records = [
+        (legislator_id, t.get("congress"), t.get("leadership_title"))
+        for t in terms if t.get("leadership_title")
+    ]
     if records:
         psycopg2.extras.execute_values(
             cur,
