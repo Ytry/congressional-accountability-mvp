@@ -9,3 +9,4 @@ pymupdf
 pytesseract
 pillow
 psycopg2-binary
+python-json-logger>=2.0
