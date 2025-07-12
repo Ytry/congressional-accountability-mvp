@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Target Congress session
+# Target Congress session (for logging/demo)
 TARGET_CONGRESS = 118
 
 # Database credentials from environment
@@ -31,11 +31,7 @@ DB = {
 }
 
 # ── CONNECTION POOL ──────────────────────────────────────────────────────────────
-try:
-    conn_pool = ThreadedConnectionPool(minconn=1, maxconn=5, **DB)
-except Exception as e:
-    logging.critical(f"❌ Failed to initialize connection pool: {e}")
-    raise
+conn_pool = ThreadedConnectionPool(minconn=1, maxconn=5, **DB)
 
 @contextmanager
 def get_conn():
@@ -51,9 +47,11 @@ def get_cursor():
         with conn.cursor() as cur:
             yield conn, cur
 
-# ── SOURCES ─────────────────────────────────────────────────────────────────────
-CURRENT_URL    = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml"
-HISTORICAL_URL = "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-historical.yaml"
+# ── SOURCE: CURRENT MEMBERS ──────────────────────────────────────────────────────
+CURRENT_URL = (
+    "https://raw.githubusercontent.com/unitedstates/congress-legislators/"
+    "main/legislators-current.yaml"
+)
 
 # ── FETCH & PARSE ───────────────────────────────────────────────────────────────
 def fetch_yaml_data(url: str) -> List[dict]:
@@ -64,52 +62,47 @@ def fetch_yaml_data(url: str) -> List[dict]:
 
 
 def parse_legislator(raw) -> Optional[dict]:
-    try:
-        ids = raw.get("id", {})
-        bioguide = ids.get("bioguide")
-        terms = raw.get("terms", [])
-        if not bioguide or not terms:
-            return None
-
-        # Only include those serving in TARGET_CONGRESS
-        if not any((t.get("congress") == TARGET_CONGRESS) for t in terms):
-            return None
-
-        # Use the latest term for current chamber/party/state fields
-        last = terms[-1]
-        chamber = "House" if last.get("type") == "rep" else "Senate" if last.get("type") == "sen" else None
-        if not chamber:
-            return None
-
-        name = raw.get("name", {})
-        first, last_name = name.get("first", ""), name.get("last", "")
-        full_name = f"{first} {last_name}".strip()
-
-        contact = {"address": last.get("address"), "phone": last.get("phone")}
-        bio_snip = f"{raw.get('bio', {}).get('birthday', '')} – {raw.get('bio', {}).get('gender', '')}"
-
-        return {
-            "bioguide_id":       bioguide,
-            "icpsr_id":          str(ids.get("icpsr")) if ids.get("icpsr") else None,
-            "first_name":        first,
-            "last_name":         last_name,
-            "full_name":         full_name,
-            "gender":            raw.get("bio", {}).get("gender"),
-            "birthday":          raw.get("bio", {}).get("birthday"),
-            "party":             last.get("party"),
-            "state":             last.get("state"),
-            "district":          last.get("district") if chamber == "House" else None,
-            "chamber":           chamber,
-            # Portraits fetched separately
-            "portrait_url":      f"https://theunitedstates.io/images/congress/450x550/{bioguide}.jpg",
-            "official_website_url": last.get("url"),
-            "office_contact":    contact,
-            "bio_snapshot":      bio_snip,
-            "terms":             terms,
-        }
-    except Exception as e:
-        logging.error(f"❌ parse_legislator error: {e}")
+    ids = raw.get("id", {})
+    bioguide = ids.get("bioguide")
+    terms = raw.get("terms", [])
+    if not bioguide or not terms:
         return None
+
+    # Only current members: last term has no end
+    last = terms[-1]
+    if last.get("end") is not None:
+        return None
+
+    chamber = "House" if last.get("type") == "rep" else "Senate" if last.get("type") == "sen" else None
+    if not chamber:
+        return None
+
+    name = raw.get("name", {})
+    first, last_name = name.get("first", ""), name.get("last", "")
+    full_name = f"{first} {last_name}".strip()
+
+    contact = {"address": last.get("address"), "phone": last.get("phone")}
+    bio_snip = f"{raw.get('bio', {}).get('birthday', '')} – {raw.get('bio', {}).get('gender', '')}"
+
+    return {
+        "bioguide_id":          bioguide,
+        "icpsr_id":             str(ids.get("icpsr")) if ids.get("icpsr") else None,
+        "first_name":           first,
+        "last_name":            last_name,
+        "full_name":            full_name,
+        "gender":               raw.get("bio", {}).get("gender"),
+        "birthday":             raw.get("bio", {}).get("birthday"),
+        "party":                last.get("party"),
+        "state":                last.get("state"),
+        "district":             last.get("district") if chamber == "House" else None,
+        "chamber":              chamber,
+        # Portraits fetched separately
+        "portrait_url":         f"https://theunitedstates.io/images/congress/450x550/{bioguide}.jpg",
+        "official_website_url": last.get("url"),
+        "office_contact":       contact,
+        "bio_snapshot":         bio_snip,
+        "terms":                terms,
+    }
 
 # ── INSERT FUNCTIONS ────────────────────────────────────────────────────────────
 def insert_legislator(cur, leg):
@@ -207,12 +200,8 @@ def insert_leadership_roles(cur, legislator_id, terms):
 def run():
     logging.info(f"🚀 Starting legislator ETL for {TARGET_CONGRESS}th Congress...")
     try:
-        current = fetch_yaml_data(CURRENT_URL)
-        historical = fetch_yaml_data(HISTORICAL_URL)
-        combined = current + historical
-        # Filter raw entries to those who served in TARGET_CONGRESS
-        entries = [raw for raw in combined if any(t.get("congress") == TARGET_CONGRESS for t in raw.get("terms", []))]
-        logging.info(f"ℹ️ {len(entries)} entries match {TARGET_CONGRESS}th Congress filter.")
+        entries = fetch_yaml_data(CURRENT_URL)
+        logging.info(f"ℹ️ {len(entries)} current legislators fetched.")
     except Exception as e:
         logging.critical(f"❌ Startup failure: {e}")
         return
