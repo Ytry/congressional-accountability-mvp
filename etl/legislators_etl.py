@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# legislators_etl.py — ETL for legislators with connection pooling and context managers
+# legislators_etl_118.py — ETL for 118th Congress legislators only, with connection pooling and context managers
 
 import os
 import json
@@ -16,8 +16,12 @@ from dotenv import load_dotenv
 
 # ── CONFIG & LOGGING ─────────────────────────────────────────────────────────────
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%((asctime)s)s [%(levelname)s] %(message)s")
 
+# Target Congress session
+TARGET_CONGRESS = 118
+
+# Database credentials from environment
 DB = {
     "dbname":   os.getenv("DB_NAME"),
     "user":     os.getenv("DB_USER"),
@@ -63,12 +67,15 @@ def parse_legislator(raw) -> Optional[dict]:
     try:
         ids = raw.get("id", {})
         bioguide = ids.get("bioguide")
-        if not bioguide:
-            return None
         terms = raw.get("terms", [])
-        if not terms:
+        if not bioguide or not terms:
             return None
 
+        # Only include those serving in TARGET_CONGRESS
+        if not any((t.get("congress") == TARGET_CONGRESS) for t in terms):
+            return None
+
+        # Use the latest term for current chamber/party/state fields
         last = terms[-1]
         chamber = "House" if last.get("type") == "rep" else "Senate" if last.get("type") == "sen" else None
         if not chamber:
@@ -93,6 +100,7 @@ def parse_legislator(raw) -> Optional[dict]:
             "state":             last.get("state"),
             "district":          last.get("district") if chamber == "House" else None,
             "chamber":           chamber,
+            # Portraits fetched separately
             "portrait_url":      f"https://theunitedstates.io/images/congress/450x550/{bioguide}.jpg",
             "official_website_url": last.get("url"),
             "office_contact":    contact,
@@ -197,18 +205,21 @@ def insert_leadership_roles(cur, legislator_id, terms):
 
 # ── ETL DRIVER ──────────────────────────────────────────────────────────────────
 def run():
-    logging.info("🚀 Starting legislator ETL job...")
+    logging.info(f"🚀 Starting legislator ETL for {TARGET_CONGRESS}th Congress...")
     try:
         current = fetch_yaml_data(CURRENT_URL)
         historical = fetch_yaml_data(HISTORICAL_URL)
         combined = current + historical
+        # Filter raw entries to those who served in TARGET_CONGRESS
+        entries = [raw for raw in combined if any(t.get("congress") == TARGET_CONGRESS for t in raw.get("terms", []))]
+        logging.info(f"ℹ️ {len(entries)} entries match {TARGET_CONGRESS}th Congress filter.")
     except Exception as e:
         logging.critical(f"❌ Startup failure: {e}")
         return
 
     success = skipped = failed = 0
     with get_cursor() as (conn, cur):
-        for raw in combined:
+        for raw in entries:
             leg = parse_legislator(raw)
             if not leg:
                 skipped += 1
