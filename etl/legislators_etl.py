@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# legislators_etl_118.py — ETL for 118th Congress legislators only, with connection pooling and context managers
+# legislators_etl_118.py — ETL for 118th Congress legislators only (using current roster), with connection pooling and context managers
 
 import os
 import json
 import logging
+from datetime import datetime
 from typing import Optional, List
 
 import requests
@@ -17,9 +18,6 @@ from dotenv import load_dotenv
 # ── CONFIG & LOGGING ─────────────────────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-# Target Congress session (for logging/demo)
-TARGET_CONGRESS = 118
 
 # Database credentials from environment
 DB = {
@@ -68,21 +66,26 @@ def parse_legislator(raw) -> Optional[dict]:
     if not bioguide or not terms:
         return None
 
-    # Only current members: last term has no end
-    last = terms[-1]
-    if last.get("end") is not None:
-        return None
+    # Pick the most recent term by start date
+    valid_terms = [t for t in terms if t.get("start")]
+    valid_terms.sort(key=lambda t: t["start"], reverse=True)
+    current_term = valid_terms[0]
 
-    chamber = "House" if last.get("type") == "rep" else "Senate" if last.get("type") == "sen" else None
+    chamber = (
+        "House" if current_term.get("type") == "rep"
+        else "Senate" if current_term.get("type") == "sen"
+        else None
+    )
     if not chamber:
         return None
 
     name = raw.get("name", {})
-    first, last_name = name.get("first", ""), name.get("last", "")
+    first = name.get("first", "")
+    last_name = name.get("last", "")
     full_name = f"{first} {last_name}".strip()
 
-    contact = {"address": last.get("address"), "phone": last.get("phone")}
-    bio_snip = f"{raw.get('bio', {}).get('birthday', '')} – {raw.get('bio', {}).get('gender', '')}"
+    contact = {"address": current_term.get("address"), "phone": current_term.get("phone")}
+    bio_snip = f"{raw.get('bio', {{}}).get('birthday', '')} – {raw.get('bio', {{}}).get('gender', '')}"
 
     return {
         "bioguide_id":          bioguide,
@@ -90,15 +93,14 @@ def parse_legislator(raw) -> Optional[dict]:
         "first_name":           first,
         "last_name":            last_name,
         "full_name":            full_name,
-        "gender":               raw.get("bio", {}).get("gender"),
-        "birthday":             raw.get("bio", {}).get("birthday"),
-        "party":                last.get("party"),
-        "state":                last.get("state"),
-        "district":             last.get("district") if chamber == "House" else None,
+        "gender":               raw.get("bio", {{}}).get("gender"),
+        "birthday":             raw.get("bio", {{}}).get("birthday"),
+        "party":                current_term.get("party"),
+        "state":                current_term.get("state"),
+        "district":             current_term.get("district") if current_term.get("type") == "rep" else None,
         "chamber":              chamber,
-        # Portraits fetched separately
         "portrait_url":         f"https://theunitedstates.io/images/congress/450x550/{bioguide}.jpg",
-        "official_website_url": last.get("url"),
+        "official_website_url": current_term.get("url"),
         "office_contact":       contact,
         "bio_snapshot":         bio_snip,
         "terms":                terms,
@@ -126,8 +128,7 @@ def insert_legislator(cur, leg):
             portrait_url = EXCLUDED.portrait_url,
             official_website_url = EXCLUDED.official_website_url,
             office_contact = EXCLUDED.office_contact,
-            bio_snapshot = EXCLUDED.bio_snapshot
-        RETURNING id;
+            bio_snapshot = EXCLUDED.bio_snapshot;
         """,
         (
             leg["bioguide_id"], leg["icpsr_id"], leg["first_name"], leg["last_name"],
@@ -138,6 +139,7 @@ def insert_legislator(cur, leg):
     )
     return cur.fetchone()[0]
 
+# ... insert_service_history, insert_committee_roles, insert_leadership_roles unchanged
 
 def insert_service_history(cur, legislator_id, terms):
     records = []
@@ -198,7 +200,7 @@ def insert_leadership_roles(cur, legislator_id, terms):
 
 # ── ETL DRIVER ──────────────────────────────────────────────────────────────────
 def run():
-    logging.info(f"🚀 Starting legislator ETL for {TARGET_CONGRESS}th Congress...")
+    logging.info("🚀 Starting legislator ETL (current roster)...")
     try:
         entries = fetch_yaml_data(CURRENT_URL)
         logging.info(f"ℹ️ {len(entries)} current legislators fetched.")
@@ -226,10 +228,7 @@ def run():
                 conn.rollback()
                 failed += 1
 
-    # Cleanup pool
     conn_pool.closeall()
-
-    # Summary
     logging.info("🏁 ETL Summary")
     logging.info(f"✅ Inserted: {success}")
     logging.info(f"⏭️ Skipped: {skipped}")
