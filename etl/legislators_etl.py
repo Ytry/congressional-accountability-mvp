@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# legislators_etl_118.py — ETL for 118th Congress legislators only (using current roster), with connection pooling and context managers
+# legislators_etl_118.py — ETL for current Congress legislators only, with connection pooling and context managers
 
 import os
 import json
@@ -65,7 +65,7 @@ def parse_legislator(raw) -> Optional[dict]:
     if not bioguide or not terms:
         return None
 
-    # Pick the most recent term by start date
+    # Select most recent term by start date
     valid_terms = [t for t in terms if t.get("start")]
     valid_terms.sort(key=lambda t: t["start"], reverse=True)
     current_term = valid_terms[0]
@@ -83,7 +83,6 @@ def parse_legislator(raw) -> Optional[dict]:
     last_name = name.get("last", "")
     full_name = f"{first} {last_name}".strip()
 
-    # Safe bio defaults
     bio = raw.get("bio") or {}
     birthday = bio.get("birthday", "")
     gender = bio.get("gender", "")
@@ -112,12 +111,18 @@ def parse_legislator(raw) -> Optional[dict]:
 
 # ── INSERT FUNCTIONS ────────────────────────────────────────────────────────────
 def insert_legislator(cur, leg):
+    # INSERT or UPDATE, then RETURN primary key
     cur.execute(
         """
-        INSERT INTO legislators (bioguide_id, icpsr_id, first_name, last_name, full_name,
-                                 gender, birthday, party, state, district, chamber,
-                                 portrait_url, official_website_url, office_contact, bio_snapshot)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        INSERT INTO legislators (
+            bioguide_id, icpsr_id, first_name, last_name, full_name,
+            gender, birthday, party, state, district, chamber,
+            portrait_url, official_website_url, office_contact, bio_snapshot
+        ) VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s::jsonb, %s
+        )
         ON CONFLICT (bioguide_id) DO UPDATE SET
             icpsr_id = EXCLUDED.icpsr_id,
             first_name = EXCLUDED.first_name,
@@ -132,7 +137,8 @@ def insert_legislator(cur, leg):
             portrait_url = EXCLUDED.portrait_url,
             official_website_url = EXCLUDED.official_website_url,
             office_contact = EXCLUDED.office_contact,
-            bio_snapshot = EXCLUDED.bio_snapshot;
+            bio_snapshot = EXCLUDED.bio_snapshot
+        RETURNING id;
         """,
         (
             leg["bioguide_id"], leg["icpsr_id"], leg["first_name"], leg["last_name"],
@@ -141,22 +147,29 @@ def insert_legislator(cur, leg):
             json.dumps(leg["office_contact"]), leg["bio_snapshot"]
         )
     )
+    # fetchone() will now always return the id
     return cur.fetchone()[0]
 
 
 def insert_service_history(cur, legislator_id, terms):
     records = []
     for t in terms:
-        records.append((legislator_id, t.get("start"), t.get("end"),
-                        "House" if t.get("type") == "rep" else "Senate",
-                        t.get("state"), t.get("district") if t.get("type") == "rep" else None,
-                        t.get("party")))
+        records.append((
+            legislator_id,
+            t.get("start"),
+            t.get("end"),
+            "House" if t.get("type") == "rep" else "Senate",
+            t.get("state"),
+            t.get("district") if t.get("type") == "rep" else None,
+            t.get("party")
+        ))
     psycopg2.extras.execute_values(
         cur,
         """
-        INSERT INTO service_history
-            (legislator_id, start_date, end_date, chamber, state, district, party)
-        VALUES %s
+        INSERT INTO service_history (
+            legislator_id, start_date, end_date,
+            chamber, state, district, party
+        ) VALUES %s
         ON CONFLICT (legislator_id, start_date) DO NOTHING;
         """,
         records,
@@ -168,14 +181,20 @@ def insert_committee_roles(cur, legislator_id, terms):
     records = []
     for t in terms:
         for c in t.get("committees", []):
-            records.append((legislator_id, t.get("congress"), c.get("name"),
-                            c.get("subcommittee"), c.get("position", "Member")))
+            records.append((
+                legislator_id,
+                t.get("congress"),
+                c.get("name"),
+                c.get("subcommittee"),
+                c.get("position", "Member")
+            ))
     psycopg2.extras.execute_values(
         cur,
         """
-        INSERT INTO committee_assignments
-            (legislator_id, congress, committee_name, subcommittee_name, role)
-        VALUES %s
+        INSERT INTO committee_assignments (
+            legislator_id, congress,
+            committee_name, subcommittee_name, role
+        ) VALUES %s
         ON CONFLICT (legislator_id, congress, committee_name, subcommittee_name) DO NOTHING;
         """,
         records,
@@ -193,8 +212,9 @@ def insert_leadership_roles(cur, legislator_id, terms):
         psycopg2.extras.execute_values(
             cur,
             """
-            INSERT INTO leadership_roles (legislator_id, congress, role)
-            VALUES %s
+            INSERT INTO leadership_roles (
+                legislator_id, congress, role
+            ) VALUES %s
             ON CONFLICT (legislator_id, congress, role) DO NOTHING;
             """,
             records,
@@ -227,15 +247,15 @@ def run():
                 logging.info(f"✅ {leg['bioguide_id']} ({leg['full_name']})")
                 success += 1
             except Exception as e:
-                logging.error(f"❌ Failed for {leg['bioguide_id']}: {e}")
+                logging.error(f"❌Failed for {leg['bioguide_id']}: {e}")
                 conn.rollback()
                 failed += 1
 
     conn_pool.closeall()
     logging.info("🏁 ETL Summary")
-    logging.info(f"✅ Inserted: {success}")
-    logging.info(f"⏭️ Skipped: {skipped}")
-    logging.info(f"❌ Failed: {failed}")
+    logging.info(f"✅Inserted: {success}")
+    logging.info(f"⏭️Skipped: {skipped}")
+    logging.info(f"❌Failed: {failed}")
 
 if __name__ == "__main__":
     run()
