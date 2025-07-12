@@ -29,7 +29,7 @@ PDF_LOCAL = os.path.join(SCRIPT_DIR, "pictorial_118.pdf")
 # ←── FIXED: write into src/backend/public/portraits (inside the deployed container)
 # SCRIPT_DIR = .../src/etl
 OUT_DIR = os.path.abspath(
-    os.path.join(SCRIPT_DIR, "..", "backend", "public", "portraits")
+    os.path.join(SCRIPT_DIR, "..", "public", "portraits")
 )
 
 MAP_FILE   = os.path.join(SCRIPT_DIR, "name_to_bioguide.json")
