@@ -22,7 +22,7 @@ PORTRAITS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Database Configuration ────────────────────────────────────────────────────
 # Support DATABASE_URL or individual credentials
-DATABASE_URL      = os.getenv("DATABASE_URL")
+dbp_url           = os.getenv("DATABASE_URL")
 DB_NAME           = os.getenv("DB_NAME")
 DB_USER           = os.getenv("DB_USER")
 DB_PASSWORD       = os.getenv("DB_PASSWORD")
@@ -64,3 +64,6 @@ SENATE_ROLL_URL   = (
 # ── File Names ────────────────────────────────────────────────────────────────
 NAME_TO_BIO_MAP   = ETL_DIR / "name_to_bioguide.json"
 PICT_DEBUG_JSON   = DEBUG_DIR / "pictorial_etl_debug.json"
+
+# ── OpenSecrets API Configuration ─────────────────────────────────────────────
+OPENSECRETS_API_KEY = os.getenv("OPENSECRETS_API_KEY")
