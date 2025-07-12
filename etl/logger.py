@@ -1,20 +1,21 @@
 import logging
-import os
 import sys
 import uuid
 from logging.handlers import TimedRotatingFileHandler
 from pythonjsonlogger import jsonlogger
+import config
 
 
 def setup_logger(service_name: str) -> logging.LoggerAdapter:
     """
     Configure and return a JSON-formatted LoggerAdapter for ETL scripts.
 
-    Ensures handlers are only added once to avoid duplicates.
+    Uses configuration from config.py (LOG_LEVEL, CORRELATION_ID, LOGS_DIR),
+    ensures handlers are only added once to avoid duplicates.
     """
     # Determine log level and correlation ID
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    correlation_id = os.getenv("CORRELATION_ID") or uuid.uuid4().hex
+    log_level = config.LOG_LEVEL
+    correlation_id = config.CORRELATION_ID or uuid.uuid4().hex
 
     # Get or create the base logger
     logger = logging.getLogger(service_name)
@@ -39,12 +40,12 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
         stream_handler.setFormatter(json_formatter)
         logger.addHandler(stream_handler)
 
-        # File handler with daily rotation (placed alongside this file)
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        logs_dir = os.path.join(base_dir, 'logs')
-        os.makedirs(logs_dir, exist_ok=True)
+        # File handler with daily rotation
+        log_dir = config.LOGS_DIR
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_path = log_dir / f"{service_name}.log"
         file_handler = TimedRotatingFileHandler(
-            filename=os.path.join(logs_dir, f"{service_name}.log"),
+            filename=str(file_path),
             when="midnight",
             backupCount=14,
             encoding='utf-8'
