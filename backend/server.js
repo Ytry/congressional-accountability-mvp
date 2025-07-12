@@ -3,8 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const logger = require('../utils/logger');
-const correlationId = require('../utils/correlation');
+const logger = require('./utils/logger');
+const correlationId = require('./utils/correlation');
 const expressWinston = require('express-winston');
 
 const app = express();
