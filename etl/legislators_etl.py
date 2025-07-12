@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 # ── CONFIG & LOGGING ─────────────────────────────────────────────────────────────
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%((asctime)s)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Target Congress session
 TARGET_CONGRESS = 118
