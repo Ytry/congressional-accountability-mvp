@@ -39,8 +39,9 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
         stream_handler.setFormatter(json_formatter)
         logger.addHandler(stream_handler)
 
-        # File handler with daily rotation
-        logs_dir = os.path.join(os.getcwd(), 'logs')
+        # File handler with daily rotation (placed alongside this file)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        logs_dir = os.path.join(base_dir, 'logs')
         os.makedirs(logs_dir, exist_ok=True)
         file_handler = TimedRotatingFileHandler(
             filename=os.path.join(logs_dir, f"{service_name}.log"),
