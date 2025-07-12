@@ -3,7 +3,7 @@
 votes_etl.py — ETL for House (XML) and Senate (XML) roll-calls,
 with idempotent upserts, bulk inserts, connection pooling, and structured JSON logging
 """
-import os
+import sys
 import json
 import time
 import requests
@@ -15,28 +15,33 @@ import xml.etree.ElementTree as ET
 import concurrent.futures
 from datetime import datetime
 from typing import Dict, Optional
-from dotenv import load_dotenv
 
+import config
 from logger import setup_logger
 
-# ── CONFIG & LOGGING ─────────────────────────────────────────────────────────
-load_dotenv()
+# Initialize structured logger
 logger = setup_logger("votes_etl")
 
-# Database credentials from environment
-DB = {
-    "dbname":   os.getenv("DB_NAME"),
-    "user":     os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host":     os.getenv("DB_HOST"),
-    "port":     os.getenv("DB_PORT"),
-}
+# ── CONFIG ─────────────────────────────────────────────────────────────────────
+DB_URL = config.DATABASE_URL
+DB_POOL_MIN = config.DB_POOL_MIN
+DB_POOL_MAX = config.DB_POOL_MAX
 
 # ── CONNECTION POOL ───────────────────────────────────────────────────────────
 try:
-    conn_pool = ThreadedConnectionPool(minconn=1, maxconn=10, **DB)
-    logger.info("Connection pool created", extra={"minconn": 1, "maxconn": 10})
-except Exception as e:
+    if DB_URL:
+        conn_pool = ThreadedConnectionPool(DB_POOL_MIN, DB_POOL_MAX, DB_URL)
+    else:
+        conn_pool = ThreadedConnectionPool(
+            DB_POOL_MIN, DB_POOL_MAX,
+            database=config.DB_NAME,
+            user=config.DB_USER,
+            password=config.DB_PASSWORD,
+            host=config.DB_HOST,
+            port=config.DB_PORT
+        )
+    logger.info("Connection pool created", extra={"minconn": DB_POOL_MIN, "maxconn": DB_POOL_MAX})
+except Exception:
     logger.exception("Failed to create connection pool")
     raise
 
@@ -49,18 +54,16 @@ def get_conn():
         conn_pool.putconn(conn)
 
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
-HOUSE_URL      = "https://clerk.house.gov/evs/{year}/roll{roll:03d}.xml"
-SENATE_XML_URL = (
-    "https://www.senate.gov/legislative/LIS/roll_call_votes/"
-    "vote{congress}{session}/vote_{congress}_{session}_{roll:05d}.xml"
-)
-MAX_RETRIES            = 3
-RETRY_DELAY            = 0.5
-MAX_CONSECUTIVE_MISSES = 10
+HOUSE_URL = config.HOUSE_ROLL_URL
+SENATE_XML_URL = config.SENATE_ROLL_URL
+MAX_RETRIES = config.HTTP_MAX_RETRIES
+RETRY_DELAY = config.HTTP_RETRY_DELAY
+MAX_CONSECUTIVE_MISSES = config.MAX_CONSECUTIVE_MISSES
+THREAD_WORKERS = config.THREAD_WORKERS
 
 # Load Name→Bioguide map
 try:
-    with open("name_to_bioguide.json") as f:
+    with open(str(config.NAME_TO_BIO_MAP)) as f:
         NAME_TO_BIOGUIDE = json.load(f)
     logger.info("Loaded name_to_bioguide map", extra={"entries": len(NAME_TO_BIOGUIDE)})
 except FileNotFoundError:
@@ -148,7 +151,7 @@ def upsert_vote(vote: Dict) -> bool:
 def fetch_with_retry(url: str) -> Optional[requests.Response]:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, timeout=config.HTTP_TIMEOUT)
             if resp.status_code == 200:
                 return resp
             if resp.status_code == 404:
@@ -162,32 +165,31 @@ def fetch_with_retry(url: str) -> Optional[requests.Response]:
 
 # ── PARSERS ─────────────────────────────────────────────────────────────────────
 def parse_house(congress: int, session: int, roll: int) -> Optional[Dict]:
-    year = 2023 if (congress==118 and session==1) else 2024
-    url = HOUSE_URL.format(year=year, roll=roll)
+    url = HOUSE_URL.format(year=config.HOUSE_YEAR, roll=roll)
     resp = fetch_with_retry(url)
     if not resp or not resp.content.lstrip().startswith(b"<?xml"):
         return None
     try:
         root = ET.fromstring(resp.content)
         date = datetime.strptime(root.findtext(".//action-date", ""), "%d-%b-%Y")
-    except Exception as e:
-        logger.warning("House XML parse failed", extra={"roll": roll, "error": str(e)})
+    except Exception:
+        logger.warning("House XML parse failed", extra={"roll": roll})
         return None
 
     vote = {
-        "vote_id":    f"house-{congress}-{session}-{roll}",
-        "congress":   congress,
-        "chamber":    "house",
-        "date":       date,
-        "question":   root.findtext(".//question-text", default=""),
-        "description":root.findtext(".//vote-desc",      default=""),
-        "result":     root.findtext(".//vote-result",    default=""),
-        "bill_id":    root.findtext(".//legis-num",      default=None),
-        "tally":      []
+        "vote_id": f"house-{congress}-{session}-{roll}",
+        "congress": congress,
+        "chamber": "house",
+        "date": date,
+        "question": root.findtext(".//question-text", ""),
+        "description": root.findtext(".//vote-desc", ""),
+        "result": root.findtext(".//vote-result", ""),
+        "bill_id": root.findtext(".//legis-num", None),
+        "tally": []
     }
     for rec in root.findall(".//recorded-vote"):
         biog = rec.find("legislator").attrib.get("name-id") if rec.find("legislator") is not None else None
-        pos  = rec.findtext("vote", default="")
+        pos = rec.findtext("vote", "")
         vote["tally"].append({"bioguide_id": biog, "position": pos})
     return vote
 
@@ -199,8 +201,8 @@ def parse_senate(congress: int, session: int, roll: int) -> Optional[Dict]:
         return None
     try:
         root = ET.fromstring(resp.content)
-    except Exception as e:
-        logger.warning("Senate XML parse failed", extra={"roll": roll, "error": str(e)})
+    except Exception:
+        logger.warning("Senate XML parse failed", extra={"roll": roll})
         return None
     try:
         date = datetime.strptime(root.findtext("vote_date", ""), "%B %d, %Y,  %I:%M %p")
@@ -212,25 +214,24 @@ def parse_senate(congress: int, session: int, roll: int) -> Optional[Dict]:
         name = f"{m.findtext('first_name','').strip()} {m.findtext('last_name','').strip()}".strip()
         biog = NAME_TO_BIOGUIDE.get(name)
         tally.append({"bioguide_id": biog, "position": m.findtext("vote_cast","" )})
-
     return {
-        "vote_id":    f"senate-{congress}-{session}-{roll}",
-        "congress":   congress,
-        "chamber":    "senate",
-        "date":       date,
-        "question":   root.findtext("vote_question_text") or "",
-        "description":root.findtext("vote_title") or "",
-        "result":     root.findtext("vote_result") or "",
-        "bill_id":    None,
-        "tally":      tally
+        "vote_id": f"senate-{congress}-{session}-{roll}",
+        "congress": congress,
+        "chamber": "senate",
+        "date": date,
+        "question": root.findtext("vote_question_text") or "",
+        "description": root.findtext("vote_title") or "",
+        "result": root.findtext("vote_result") or "",
+        "bill_id": None,
+        "tally": tally
     }
 
 # ── DRIVER ─────────────────────────────────────────────────────────────────────
 def run_chamber(name: str, parser, congress: int, session: int):
     logger.info("Starting chamber ETL", extra={"chamber": name, "congress": congress, "session": session})
     inserted = 0
-    misses   = 0
-    roll     = 1
+    misses = 0
+    roll = 1
     while misses < MAX_CONSECUTIVE_MISSES:
         vote = parser(congress, session, roll)
         if vote and vote.get("tally"):
@@ -246,11 +247,11 @@ def run_chamber(name: str, parser, congress: int, session: int):
 def main():
     import argparse
     p = argparse.ArgumentParser(description="Run votes ETL for specified Congress and session")
-    p.add_argument("congress", type=int, nargs="?", default=118)
-    p.add_argument("session", type=int, nargs="?", default=1)
+    p.add_argument("congress", type=int, nargs="?", default=config.CONGRESS)
+    p.add_argument("session", type=int, nargs="?", default=config.SESSION)
     args = p.parse_args()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_WORKERS) as executor:
         futures = [
             executor.submit(run_chamber, "house", parse_house, args.congress, args.session),
             executor.submit(run_chamber, "senate", parse_senate, args.congress, args.session)
