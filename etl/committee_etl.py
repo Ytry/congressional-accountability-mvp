@@ -1,41 +1,72 @@
-# committee_etl.py – scrapes congress.gov committee JSON
-import os, logging, requests, psycopg2
-from dotenv import load_dotenv
-load_dotenv()
+#!/usr/bin/env python3
+"""
+committee_etl.py — ETL for committee assignments via Congress.gov API
+"""
+import config
+from logger import setup_logger
+from utils import fetch_with_retry, get_cursor, fetch_legislator_map, bulk_upsert
 
-DB = {k: os.getenv(k) for k in ("DB_NAME","DB_USER","DB_PASSWORD","DB_HOST","DB_PORT")}
+# Initialize structured logger
+logger = setup_logger("committee_etl")
+
+# Template for committee API
 COMMITTEE_URL = "https://www.congress.gov/committee/{cong}/{type}/json"
 
-def connect(): return psycopg2.connect(**DB)
 
-def get_legislator_ids():
-    with connect() as c, c.cursor() as cur:
-        cur.execute("SELECT id, bioguide_id FROM legislators")
-        return dict(cur.fetchall())
+def crawl(congress: int = config.CONGRESS):
+    logger.info("Starting committee ETL", extra={"congress": congress})
 
-def upsert(rows):
-    with connect() as c, c.cursor() as cur:
-        cur.executemany("""
-            INSERT INTO committee_assignments
-            (legislator_id, congress, committee_name,
-             subcommittee_name, role)
-            VALUES (%s,%s,%s,%s,%s)
-            ON CONFLICT DO NOTHING
-        """, rows); c.commit()
+    # Build mapping bioguide_id -> internal legislator_id
+    mapping = fetch_legislator_map(query="SELECT bioguide_id, id FROM legislators")
+    if not mapping:
+        logger.warning("No legislators found; skipping committee ETL")
+        return
+    logger.info("Loaded legislator map", extra={"entries": len(mapping)})
 
-def crawl(congress=118):
-    biog2id = get_legislator_ids()
-    for typ in ("house","senate"):
-        data = requests.get(COMMITTEE_URL.format(cong=congress, type=typ)).json()
-        for committee in data["committees"]:
-            cname = committee["name"]
-            for mem in committee["members"]:
-                lid = biog2id.get(mem["bioguideId"])
-                if not lid: continue
-                rows = [(lid, congress, cname,
-                         mem.get("subcommitteeName"), mem.get("role","Member"))]
-                upsert(rows)
+    # Process both House and Senate committees
+    for chamber in ("house", "senate"):
+        url = COMMITTEE_URL.format(cong=congress, type=chamber)
+        resp = fetch_with_retry(url)
+        if not resp:
+            logger.error("Failed to fetch committee data", extra={"url": url, "chamber": chamber})
+            continue
+        try:
+            data = resp.json()
+        except Exception:
+            logger.exception("Invalid JSON in committee response", extra={"url": url})
+            continue
+
+        rows = []
+        for committee in data.get("committees", []):
+            name = committee.get("name")
+            for member in committee.get("members", []):
+                biog_id = member.get("bioguideId")
+                leg_id = mapping.get(biog_id)
+                if not leg_id:
+                    logger.debug("Skipping member; unknown bioguide", extra={"bioguide": biog_id})
+                    continue
+                rows.append((
+                    leg_id,
+                    congress,
+                    name,
+                    member.get("subcommitteeName"),
+                    member.get("role", "Member")
+                ))
+
+        if rows:
+            with get_cursor() as (conn, cur):
+                bulk_upsert(
+                    cur,
+                    table="committee_assignments",
+                    rows=rows,
+                    columns=["legislator_id","congress","committee_name","subcommittee_name","role"],
+                    conflict_cols=["legislator_id","congress","committee_name","subcommittee_name"],
+                    update_cols=[]
+                )
+            logger.info("Upserted committee assignments", extra={"chamber": chamber, "rows": len(rows)})
+        else:
+            logger.info("No committee assignments to upsert", extra={"chamber": chamber})
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     crawl()
