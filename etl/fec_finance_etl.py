@@ -114,7 +114,7 @@ def main():
         leg_id = leg_map.get(bioguide)
         if not leg_id:
             logger.warning("Legislator not found in map", extra={"bioguide": bioguide})
-            continue
+        continue
 
         # Fetch summary totals
         totals = fetch_totals(fec_id, cycle)
