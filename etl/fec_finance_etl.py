@@ -133,17 +133,17 @@ def main():
     top_donors         = build_breakdown(donors_counter)
     industry_breakdown = build_breakdown(employer_counter)
 
-        rows.append(
-            (
-                leg_id,
-                cycle,
-                totals.get("total_raised"),
-                totals.get("total_spent"),
-                totals.get("other_federal_receipts"),
-                json.dumps(top_donors),
-                json.dumps(industry_breakdown)
-            )
+    rows.append(
+        (
+            leg_id,
+            cycle,
+            totals.get("total_raised"),
+            totals.get("total_spent"),
+            totals.get("other_federal_receipts"),
+            json.dumps(top_donors),
+            json.dumps(industry_breakdown)
         )
+    )
 
     # Upsert into campaign_finance
     if rows:
