@@ -12,7 +12,6 @@ FETCH_CANDIDATES_SQL = "SELECT fec_id, bioguide_id, cycle FROM fec_candidates"
 # FEC endpoints
 TOTALS_ENDPOINT = f"{config.FEC_BASE_URL}/candidate/{{fec_id}}/totals/"
 SCHEDULE_A_ENDPOINT = f"{config.FEC_BASE_URL}/schedules/schedule_a/"
-SCHEDULE_B_ENDPOINT = f"{config.FEC_BASE_URL}/schedules/schedule_b/"
 
 # Upsert config
 TABLE = "campaign_finance"
@@ -37,7 +36,7 @@ def fetch_totals(fec_id: str, cycle: int) -> dict:
     try:
         data = utils.load_json_from_url(url)
     except Exception as e:
-        logger.error("Error fetching totals", extra={"fec_id": fec_id, "cycle": cycle, "url": url, "error": str(e)})
+        logger.error("Error fetching totals", extra={"fec_id": fec_id, "cycle": cycle, "error": str(e)})
         return {}
 
     results = data.get("results") or []
@@ -71,13 +70,13 @@ def fetch_itemized(endpoint: str, fec_id: str, cycle: int, key: str) -> Counter:
         except Exception as e:
             logger.error(
                 "Error fetching itemized data",
-                extra={"fec_id": fec_id, "cycle": cycle, "url": url, "error": str(e)}
+                extra={"fec_id": fec_id, "cycle": cycle, "error": str(e)}
             )
             break
 
         results = data.get("results") or []
         if not results:
-            logger.debug("No more itemized results", extra={"key": key, "fec_id": fec_id, "page": page})
+            logger.debug("No more itemized results", extra={"fec_id": fec_id, "page": page})
             break
 
         for item in results:
@@ -114,48 +113,37 @@ def main():
         leg_id = leg_map.get(bioguide)
         if not leg_id:
             logger.warning("Legislator not found in map", extra={"bioguide": bioguide})
-        continue
+            continue  # skip to next candidate
 
         # Fetch summary totals
         totals = fetch_totals(fec_id, cycle)
-    if not totals:
-        continue
+        if not totals:
+            continue  # skip if no summary data
 
-    try:
-        donors_counter   = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_organization")
+        # Fetch itemized breakdowns, allow failures
+        donors_counter = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_organization")
         employer_counter = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_employer")
-    except Exception:
-    # log and move on—itemized may not be available for all candidates/cycles
-        logger.warning("Itemized breakdown unavailable, skipping", extra={"fec_id": fec_id, "cycle": cycle})
-        donors_counter   = Counter()
-        employer_counter = Counter()
 
-    top_donors         = build_breakdown(donors_counter)
-    industry_breakdown = build_breakdown(employer_counter)
+        top_donors = build_breakdown(donors_counter)
+        industry_breakdown = build_breakdown(employer_counter)
 
-    rows.append(
-        (
-            leg_id,
-            cycle,
-            totals.get("total_raised"),
-            totals.get("total_spent"),
-            totals.get("other_federal_receipts"),
-            json.dumps(top_donors),
-            json.dumps(industry_breakdown)
+        rows.append(
+            (
+                leg_id,
+                cycle,
+                totals["total_raised"],
+                totals["total_spent"],
+                totals["other_federal_receipts"],
+                json.dumps(top_donors),
+                json.dumps(industry_breakdown)
+            )
         )
-    )
 
     # Upsert into campaign_finance
     if rows:
         logger.info("Upserting rows into campaign_finance", extra={"rows": len(rows)})
         with utils.get_cursor() as (_, cur):
-            utils.bulk_upsert(
-                cur,
-                TABLE,
-                rows,
-                COLUMNS,
-                CONFLICT_COLS
-            )
+            utils.bulk_upsert(cur, TABLE, rows, COLUMNS, CONFLICT_COLS)
         logger.info("FEC finance ETL completed successfully", extra={"rows": len(rows)})
     else:
         logger.info("No rows to upsert for FEC finance ETL")
