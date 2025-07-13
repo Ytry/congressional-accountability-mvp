@@ -33,11 +33,19 @@ def fetch_totals(fec_id: str, cycle: int) -> dict:
     Fetch summary totals for a candidate and return key metrics.
     """
     url = f"{TOTALS_ENDPOINT.format(fec_id=fec_id)}?api_key={config.FEC_API_KEY}&cycle={cycle}"
-    data = utils.load_json_from_url(url)
-    if not data.get("results"):
-        logger.warning("No totals data", extra={"fec_id": fec_id, "cycle": cycle})
+    logger.debug("Fetching totals", extra={"url": url})
+    try:
+        data = utils.load_json_from_url(url)
+    except Exception as e:
+        logger.error("Error fetching totals", extra={"fec_id": fec_id, "cycle": cycle, "url": url, "error": str(e)})
         return {}
-    rec = data["results"][0]
+
+    results = data.get("results") or []
+    if not results:
+        logger.warning("No totals data returned", extra={"fec_id": fec_id, "cycle": cycle})
+        return {}
+
+    rec = results[0]
     return {
         "total_raised": rec.get("receipts", 0),
         "total_spent": rec.get("disbursements", 0),
@@ -48,7 +56,6 @@ def fetch_totals(fec_id: str, cycle: int) -> dict:
 def fetch_itemized(endpoint: str, fec_id: str, cycle: int, key: str) -> Counter:
     """
     Page through FEC itemized contributions/disbursements and aggregate by key field.
-    key: 'contributor_organization' or 'contributor_employer'
     """
     counter = Counter()
     page = 1
@@ -58,15 +65,27 @@ def fetch_itemized(endpoint: str, fec_id: str, cycle: int, key: str) -> Counter:
             f"&candidate_id={fec_id}&cycle={cycle}"
             f"&per_page={config.FEC_PAGE_SIZE}&page={page}"
         )
-        data = utils.load_json_from_url(url)
-        results = data.get("results", [])
-        if not results:
+        logger.debug("Fetching itemized data", extra={"url": url, "key": key, "page": page})
+        try:
+            data = utils.load_json_from_url(url)
+        except Exception as e:
+            logger.error(
+                "Error fetching itemized data",
+                extra={"fec_id": fec_id, "cycle": cycle, "url": url, "error": str(e)}
+            )
             break
+
+        results = data.get("results") or []
+        if not results:
+            logger.debug("No more itemized results", extra={"key": key, "fec_id": fec_id, "page": page})
+            break
+
         for item in results:
             name = item.get(key) or "Unknown"
-            amount = item.get("amount", 0)
+            amount = item.get("amount", 0) or 0
             counter[name] += amount
         page += 1
+
     return counter
 
 
@@ -78,13 +97,17 @@ def build_breakdown(counter: Counter, top_n: int = 10) -> list:
 
 
 def main():
+    logger.info("Starting FEC finance ETL run")
+
     # Map bioguide_id -> internal id
     leg_map = utils.fetch_legislator_map()
+    logger.debug("Fetched legislator map", extra={"count": len(leg_map)})
 
     # Fetch all FEC candidates
     with utils.get_cursor(commit=False) as (_, cur):
         cur.execute(FETCH_CANDIDATES_SQL)
         candidates = cur.fetchall()
+    logger.info("Loaded FEC candidates to process", extra={"count": len(candidates)})
 
     rows = []
     for fec_id, bioguide, cycle in candidates:
@@ -119,6 +142,7 @@ def main():
 
     # Upsert into campaign_finance
     if rows:
+        logger.info("Upserting rows into campaign_finance", extra={"rows": len(rows)})
         with utils.get_cursor() as (_, cur):
             utils.bulk_upsert(
                 cur,
@@ -127,7 +151,7 @@ def main():
                 COLUMNS,
                 CONFLICT_COLS
             )
-        logger.info("FEC finance ETL completed", extra={"rows": len(rows)})
+        logger.info("FEC finance ETL completed successfully", extra={"rows": len(rows)})
     else:
         logger.info("No rows to upsert for FEC finance ETL")
 
