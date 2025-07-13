@@ -118,15 +118,20 @@ def main():
 
         # Fetch summary totals
         totals = fetch_totals(fec_id, cycle)
-        if not totals:
-            continue
+    if not totals:
+        continue
 
-        # Itemized breakdowns
-        donors_counter = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_organization")
+    try:
+        donors_counter   = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_organization")
         employer_counter = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_employer")
+    except Exception:
+    # log and move on—itemized may not be available for all candidates/cycles
+        logger.warning("Itemized breakdown unavailable, skipping", extra={"fec_id": fec_id, "cycle": cycle})
+        donors_counter   = Counter()
+        employer_counter = Counter()
 
-        top_donors = build_breakdown(donors_counter)
-        industry_breakdown = build_breakdown(employer_counter)
+    top_donors         = build_breakdown(donors_counter)
+    industry_breakdown = build_breakdown(employer_counter)
 
         rows.append(
             (
