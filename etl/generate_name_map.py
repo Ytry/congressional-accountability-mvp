@@ -6,38 +6,27 @@ Fetch the current legislators JSON and build a mapping of full Senate member nam
 Writes to a default path from config.NAME_TO_BIO_MAP or an optional CLI argument.
 """
 import sys
-import json
 from pathlib import Path
-import requests
+
 import config
 from logger import setup_logger
+from utils import load_json_from_url, write_json
 
 # Initialize structured logger
 logger = setup_logger("generate_name_map")
 
 # Configuration
 LEGIS_URL = config.LEGIS_JSON_URL
-TIMEOUT = config.HTTP_TIMEOUT
 OUTPUT_DEFAULT = config.NAME_TO_BIO_MAP
-
-
-def fetch_legislators(url: str):
-    logger.info("Fetching legislators JSON", extra={"url": url})
-    try:
-        resp = requests.get(url, timeout=TIMEOUT)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        logger.exception("Failed to fetch legislators JSON")
-        raise
 
 
 def build_name_to_bioguide(output_path: Path):
     logger.info("Building name_to_bioguide mapping", extra={"output_path": str(output_path)})
     try:
-        legislators = fetch_legislators(LEGIS_URL)
+        legislators = load_json_from_url(LEGIS_URL)
+        logger.info("Fetched legislators list", extra={"source": LEGIS_URL, "count": len(legislators)})
     except Exception:
-        logger.error("Aborting name_map build due to fetch error")
+        logger.exception("Failed to fetch legislators JSON")
         sys.exit(1)
 
     mapping = {}
@@ -58,12 +47,9 @@ def build_name_to_bioguide(output_path: Path):
         if full_name:
             mapping[full_name] = biog_id
 
-    # Write mapping to file
     try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w") as f:
-            json.dump(mapping, f, indent=2)
-        logger.info("Wrote name_to_bioguide file", extra={"entries": len(mapping)})
+        write_json(output_path, mapping)
+        logger.info("Wrote name_to_bioguide file", extra={"entries": len(mapping), "path": str(output_path)})
     except Exception:
         logger.exception("Failed to write name_to_bioguide file")
         sys.exit(1)
@@ -71,7 +57,9 @@ def build_name_to_bioguide(output_path: Path):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Generate mapping of Senate member names to Bioguide IDs")
+    parser = argparse.ArgumentParser(
+        description="Generate mapping of Senate member names to Bioguide IDs"
+    )
     parser.add_argument(
         "output",
         nargs='?', 
