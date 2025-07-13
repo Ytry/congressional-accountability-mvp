@@ -136,23 +136,20 @@ def fetch_with_retry(
 
 
 def load_json_from_url(url: str) -> dict:
-    """
-    Fetch JSON with retries, return parsed dict, with debug timing.
-    """
-    start_time = time.monotonic()
-    resp = fetch_with_retry(url)
-    duration_ms = int((time.monotonic() - start_time) * 1000)
-    logger.debug("load_json_from_url duration", extra={"url": url, "duration_ms": duration_ms})
-    if not resp:
-        logger.error("Failed to fetch JSON from URL", extra={"url": url})
-        raise IOError(f"Failed to fetch JSON from {url}")
-    try:
-        data = resp.json()
-        logger.debug("JSON parsed successfully", extra={"url": url, "type": type(data).__name__})
-        return data
-    except Exception:
-        logger.exception("Invalid JSON response", extra={"url": url})
-        raise
+    for attempt in range(1, MAX_RETRIES + 1):
+        resp = requests.get(url, timeout=HTTP_TIMEOUT)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            # log status + first 200 chars of body for debugging
+            logger.error("Unexpected status code from URL",
+                         extra={
+                           "url": url,
+                           "status": resp.status_code,
+                           "body_snippet": resp.text[:200]
+                         })
+        time.sleep(HTTP_RETRY_DELAY)
+    raise IOError(f"Failed to fetch JSON from {url}")
 
 
 def load_yaml_from_url(url: str) -> list:
