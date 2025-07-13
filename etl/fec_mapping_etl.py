@@ -26,7 +26,7 @@ COLUMNS = [
     "cycle",
     "last_updated"
 ]
-CONFLICT_COLS = ["fec_id"]
+CONFLICT_COLS = ["fec_id", "cycle"]
 
 
 def generate_name_variants(fec_name: str) -> list:
