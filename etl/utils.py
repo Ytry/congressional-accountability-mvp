@@ -136,20 +136,39 @@ def fetch_with_retry(
 
 
 def load_json_from_url(url: str) -> dict:
-    for attempt in range(1, MAX_RETRIES + 1):
-        resp = requests.get(url, timeout=HTTP_TIMEOUT)
+    """
+    Fetch JSON with retries, return parsed data, with debug logging.
+    """
+    timeout = config.HTTP_TIMEOUT
+    max_retries = config.HTTP_MAX_RETRIES
+    retry_delay = config.HTTP_RETRY_DELAY
+
+    for attempt in range(1, max_retries + 1):
+        logger.debug("JSON fetch attempt", extra={"url": url, "attempt": attempt})
+        try:
+            resp = requests.get(url, timeout=timeout)
+        except Exception as e:
+            logger.error("Exception during JSON fetch",
+                         extra={"url": url, "attempt": attempt, "error": str(e)})
+            time.sleep(retry_delay * (2 ** (attempt - 1)))
+            continue
+
         if resp.status_code == 200:
-            return resp.json()
-        else:
-            # log status + first 200 chars of body for debugging
-            logger.error("Unexpected status code from URL",
-                         extra={
-                           "url": url,
-                           "status": resp.status_code,
-                           "body_snippet": resp.text[:200]
-                         })
-        time.sleep(HTTP_RETRY_DELAY)
-    raise IOError(f"Failed to fetch JSON from {url}")
+            try:
+                return resp.json()
+            except ValueError as e:
+                logger.error("Error parsing JSON",
+                             extra={"url": url, "error": str(e)})
+                raise
+
+        # anything but 200 we treat as a retryable error
+        logger.error("Unexpected status code from URL",
+                     extra={"url": url,
+                            "status": resp.status_code,
+                            "body_snippet": resp.text[:200]})
+        time.sleep(retry_delay * (2 ** (attempt - 1)))
+
+    raise IOError(f"Failed to fetch JSON from {url} after {max_retries} retries")
 
 
 def load_yaml_from_url(url: str) -> list:
