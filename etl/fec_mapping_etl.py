@@ -29,6 +29,29 @@ COLUMNS = [
 CONFLICT_COLS = ["fec_id"]
 
 
+def generate_name_variants(fec_name: str) -> list:
+    """
+    Generate possible name variants from FEC 'Last, First Middle' format.
+    Returns list of lowercased name strings for matching.
+    """
+    variants = []
+    if not fec_name:
+        return variants
+    name_lower = fec_name.lower().strip()
+    variants.append(name_lower)
+
+    # Swap 'Last, First' -> 'First Last'
+    if "," in fec_name:
+        last, first = fec_name.split(",", 1)
+        swapped = f"{first.strip()} {last.strip()}".lower()
+        variants.append(swapped)
+
+    # Remove punctuation
+    variants.append(name_lower.replace(',', ''))
+
+    return list(dict.fromkeys(variants))  # dedupe preserving order
+
+
 def fetch_candidates(cycle: int, office: str) -> list:
     """
     Page through FEC candidates for a given cycle and office.
@@ -49,13 +72,7 @@ def fetch_candidates(cycle: int, office: str) -> list:
         except Exception as e:
             logger.error(
                 "Error fetching FEC candidates",
-                extra={
-                    "url": url,
-                    "cycle": cycle,
-                    "office": office,
-                    "page": page,
-                    "error": str(e)
-                }
+                extra={"url": url, "cycle": cycle, "office": office, "page": page, "error": str(e)}
             )
             break
 
@@ -66,18 +83,13 @@ def fetch_candidates(cycle: int, office: str) -> list:
             break
 
         candidates.extend(results)
-
         pagination = data.get("pagination", {})
         total_pages = pagination.get("pages", 1)
-        logger.debug("Pagination info", extra={"cycle": cycle, "office": office, "page": page, "total_pages": total_pages})
         if page >= total_pages:
             break
         page += 1
 
-    logger.info(
-        "Fetched candidates for cycle and office",
-        extra={"cycle": cycle, "office": office, "total_fetched": len(candidates)}
-    )
+    logger.info("Fetched candidates for cycle and office", extra={"cycle": cycle, "office": office, "total_fetched": len(candidates)})
     return candidates
 
 
@@ -91,7 +103,7 @@ def build_legislator_lookup():
         rows = cur.fetchall()
         logger.info("Fetched legislators for lookup", extra={"count": len(rows)})
         for bioguide, full_name, state, district in rows:
-            key = (full_name.lower(), state, district)
+            key = (full_name.lower().strip(), state, district)
             lookup[key] = bioguide
     logger.info("Built legislator lookup", extra={"entries": len(lookup)})
     return lookup
@@ -105,31 +117,37 @@ def normalize_and_map(records, lookup, cycle, office_code):
     rows = []
     for rec in records:
         fec_id = rec.get("candidate_id")
-        name = rec.get("name")
+        raw_name = rec.get("name")
         state = rec.get("state")
         district = rec.get("district") if rec.get("district") not in (None, "", "00") else None
-        key = (name.lower(), state, district)
-        bioguide = lookup.get(key)
-        if not bioguide:
+
+        # Generate name variants and attempt to match
+        matched_bioguide = None
+        for variant in generate_name_variants(raw_name):
+            key = (variant, state, district)
+            bioguide = lookup.get(key)
+            if bioguide:
+                matched_bioguide = bioguide
+                break
+
+        if not matched_bioguide:
             logger.warning(
                 "No bioguide match for candidate",
-                extra={"fec_id": fec_id, "name": name, "state": state, "district": district}
+                extra={"fec_id": fec_id, "name": raw_name, "state": state, "district": district, "variants": generate_name_variants(raw_name)}
             )
             continue
+
         rows.append((
             fec_id,
-            bioguide,
-            name,
+            matched_bioguide,
+            raw_name,
             office_code,
             state,
             district,
             cycle,
             datetime.utcnow()
         ))
-    logger.info(
-        "Normalized and mapped records",
-        extra={"cycle": cycle, "office": office_code, "mapped_rows": len(rows)}
-    )
+    logger.info("Normalized and mapped records", extra={"cycle": cycle, "office": office_code, "mapped_rows": len(rows)})
     return rows
 
 
@@ -151,13 +169,7 @@ def main():
 
     logger.info("Upserting rows into fec_candidates", extra={"total_rows": len(all_rows)})
     with utils.get_cursor() as (_, cur):
-        utils.bulk_upsert(
-            cur,
-            TABLE,
-            all_rows,
-            COLUMNS,
-            CONFLICT_COLS
-        )
+        utils.bulk_upsert(cur, TABLE, all_rows, COLUMNS, CONFLICT_COLS)
     logger.info("FEC mapping ETL completed successfully", extra={"total_rows": len(all_rows)})
 
 if __name__ == '__main__':
