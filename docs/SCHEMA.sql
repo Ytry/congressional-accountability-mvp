@@ -1,6 +1,6 @@
 -- =============================================
 -- DIGITAL CONGRESSIONAL ACCOUNTABILITY PLATFORM
--- FULL SCHEMA MIGRATION SCRIPT (PHASE 2–3)
+-- FULL SCHEMA MIGRATION SCRIPT (PHASE 2–3 + FEC CANDIDATES)
 -- =============================================
 
 -- ========= DROP TABLES IF THEY EXIST =========
@@ -8,11 +8,12 @@
 DROP TABLE IF EXISTS vote_records CASCADE;
 DROP TABLE IF EXISTS vote_sessions CASCADE;
 DROP TABLE IF EXISTS bill_sponsorships CASCADE;
-DROP TABLE IF EXISTS campaign_finance CASCADE;
 DROP TABLE IF EXISTS election_history CASCADE;
+DROP TABLE IF EXISTS campaign_finance CASCADE;
 DROP TABLE IF EXISTS committee_assignments CASCADE;
 DROP TABLE IF EXISTS leadership_roles CASCADE;
 DROP TABLE IF EXISTS service_history CASCADE;
+DROP TABLE IF EXISTS fec_candidates CASCADE;
 DROP TABLE IF EXISTS legislators CASCADE;
 
 -- ========= CREATE TABLES =========
@@ -139,3 +140,20 @@ CREATE TABLE bill_sponsorships (
     date_introduced DATE,
     UNIQUE (legislator_id, bill_number, sponsorship_type)
 );
+
+-- ===== FEC CANDIDATES =====
+-- Maps FEC candidate IDs to Bioguide IDs for integration with OpenFEC data
+CREATE TABLE fec_candidates (
+    fec_id       VARCHAR PRIMARY KEY,
+    bioguide_id  VARCHAR NOT NULL REFERENCES legislators(bioguide_id),
+    name         TEXT,
+    office       VARCHAR,
+    state        CHAR(2),
+    district     INT,
+    cycle        SMALLINT,
+    last_updated TIMESTAMPTZ
+);
+
+-- (Optional) Index to speed lookups by bioguide and cycle
+CREATE INDEX idx_fec_candidates_bioguide_cycle
+  ON fec_candidates(bioguide_id, cycle);
