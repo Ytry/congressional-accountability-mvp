@@ -31,7 +31,7 @@ DB_PORT        = os.getenv("DB_PORT")
 DB_POOL_MIN    = int(os.getenv("DB_POOL_MIN", 1))
 DB_POOL_MAX    = int(os.getenv("DB_POOL_MAX", 5))
 
-# ── HTTP / API Settings ─────────────────────────────────────────────────────── ───────────────────────────────────────────────────────
+# ── HTTP / API Settings ───────────────────────────────────────────────────────
 HTTP_TIMEOUT      = float(os.getenv("HTTP_TIMEOUT", 15.0))
 HTTP_MAX_RETRIES  = int(os.getenv("HTTP_MAX_RETRIES", 3))
 HTTP_RETRY_DELAY  = float(os.getenv("HTTP_RETRY_DELAY", 0.5))
@@ -59,9 +59,15 @@ SENATE_ROLL_URL   = (
     "vote{congress}{session}/vote_{congress}_{session}_{roll:05d}.xml"
 )
 
-# ── File Names ────────────────────────────────────────────────────────────────
+# ── File Names ───────────────────────────────────────────────────────────────
 NAME_TO_BIO_MAP   = ETL_DIR / "name_to_bioguide.json"
 PICT_DEBUG_JSON   = DEBUG_DIR / "pictorial_etl_debug.json"
 
 # ── OpenSecrets API Configuration ─────────────────────────────────────────────
 OPENSECRETS_API_KEY = os.getenv("OPENSECRETS_API_KEY")
+
+# ── OpenFEC (FEC) API Configuration ───────────────────────────────────────────
+# Fetch your FEC key via OPENFEC_API_KEY in .env
+FEC_API_KEY    = os.getenv("OPENFEC_API_KEY")
+FEC_BASE_URL   = "https://api.open.fec.gov/v1"
+FEC_PAGE_SIZE  = int(os.getenv("FEC_PAGE_SIZE", 100))
