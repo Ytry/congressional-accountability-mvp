@@ -32,6 +32,7 @@ CONFLICT_COLS = ["fec_id"]
 def fetch_candidates(cycle: int, office: str) -> list:
     """
     Page through FEC candidates for a given cycle and office.
+    Logs each URL call and handles errors gracefully.
     Returns list of candidate records.
     """
     candidates = []
@@ -42,16 +43,41 @@ def fetch_candidates(cycle: int, office: str) -> list:
             f"&cycle={cycle}&office={office}"
             f"&per_page={config.FEC_PAGE_SIZE}&page={page}"
         )
-        data = utils.load_json_from_url(url)
-        results = data.get("results", [])
-        if not results:
+        logger.debug("Requesting FEC candidates", extra={"url": url, "cycle": cycle, "office": office, "page": page})
+        try:
+            data = utils.load_json_from_url(url)
+        except Exception as e:
+            logger.error(
+                "Error fetching FEC candidates",
+                extra={
+                    "url": url,
+                    "cycle": cycle,
+                    "office": office,
+                    "page": page,
+                    "error": str(e)
+                }
+            )
             break
+
+        results = data.get("results", [])
+        logger.debug("Received FEC response", extra={"cycle": cycle, "office": office, "page": page, "count": len(results)})
+        if not results:
+            logger.info("No more FEC candidates returned, ending pagination", extra={"cycle": cycle, "office": office, "page": page})
+            break
+
         candidates.extend(results)
+
         pagination = data.get("pagination", {})
-        if page >= pagination.get("pages", 0):
+        total_pages = pagination.get("pages", 1)
+        logger.debug("Pagination info", extra={"cycle": cycle, "office": office, "page": page, "total_pages": total_pages})
+        if page >= total_pages:
             break
         page += 1
-    logger.info("Fetched candidates page set", extra={"cycle": cycle, "office": office, "count": len(candidates)})
+
+    logger.info(
+        "Fetched candidates for cycle and office",
+        extra={"cycle": cycle, "office": office, "total_fetched": len(candidates)}
+    )
     return candidates
 
 
@@ -62,7 +88,9 @@ def build_legislator_lookup():
     lookup = {}
     with utils.get_cursor(commit=False) as (_, cur):
         cur.execute("SELECT bioguide_id, full_name, state, district FROM legislators")
-        for bioguide, full_name, state, district in cur.fetchall():
+        rows = cur.fetchall()
+        logger.info("Fetched legislators for lookup", extra={"count": len(rows)})
+        for bioguide, full_name, state, district in rows:
             key = (full_name.lower(), state, district)
             lookup[key] = bioguide
     logger.info("Built legislator lookup", extra={"entries": len(lookup)})
@@ -83,7 +111,10 @@ def normalize_and_map(records, lookup, cycle, office_code):
         key = (name.lower(), state, district)
         bioguide = lookup.get(key)
         if not bioguide:
-            logger.warning("No bioguide match for candidate", extra={"fec_id": fec_id, "name": name, "state": state, "district": district})
+            logger.warning(
+                "No bioguide match for candidate",
+                extra={"fec_id": fec_id, "name": name, "state": state, "district": district}
+            )
             continue
         rows.append((
             fec_id,
@@ -95,24 +126,30 @@ def normalize_and_map(records, lookup, cycle, office_code):
             cycle,
             datetime.utcnow()
         ))
-    logger.info("Normalized and mapped records", extra={"rows": len(rows)})
+    logger.info(
+        "Normalized and mapped records",
+        extra={"cycle": cycle, "office": office_code, "mapped_rows": len(rows)}
+    )
     return rows
 
 
 def main():
+    logger.info("Starting FEC mapping ETL run")
     lookup = build_legislator_lookup()
     all_rows = []
+
     for cycle in CYCLES:
         for office in OFFICES:
+            logger.info("Processing cycle and office", extra={"cycle": cycle, "office": office})
             records = fetch_candidates(cycle, office)
             rows = normalize_and_map(records, lookup, cycle, office)
             all_rows.extend(rows)
 
     if not all_rows:
-        logger.warning("No rows to upsert for FEC mapping ETL")
+        logger.warning("No rows to upsert for FEC mapping ETL, exiting")
         return
 
-    # Upsert into fec_candidates
+    logger.info("Upserting rows into fec_candidates", extra={"total_rows": len(all_rows)})
     with utils.get_cursor() as (_, cur):
         utils.bulk_upsert(
             cur,
@@ -121,7 +158,7 @@ def main():
             COLUMNS,
             CONFLICT_COLS
         )
-    logger.info("FEC mapping ETL completed", extra={"total_rows": len(all_rows)})
+    logger.info("FEC mapping ETL completed successfully", extra={"total_rows": len(all_rows)})
 
 if __name__ == '__main__':
     main()
