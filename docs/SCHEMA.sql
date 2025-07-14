@@ -110,6 +110,7 @@ CREATE TABLE campaign_finance (
     cycle INT NOT NULL,
     total_raised NUMERIC,
     total_spent NUMERIC,
+    other_federal_receipts NUMERIC,    -- <— newly added
     top_donors JSONB,
     industry_breakdown JSONB,
     UNIQUE (legislator_id, cycle)
