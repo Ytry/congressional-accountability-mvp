@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 fec_mapping_etl.py — ETL for mapping FEC candidates to bioguide IDs
-with batched summary warnings, enriched name matching, and manual overrides
+with end-of-run summary and improved matching
 """
 import config
 import utils
@@ -41,19 +41,14 @@ def generate_name_variants(fec_name: str) -> list:
         return variants
     raw = fec_name.strip()
     lower = raw.lower()
-    # base forms
     variants.append(lower)
-    # swap Last, First Middle -> First Middle Last
     if "," in raw:
         last, first = raw.split(",", 1)
         variants.append(f"{first.strip()} {last.strip()}".lower())
-    # strip punctuation
     variants.append(lower.replace(',', '').replace('.', ''))
-    # strip common suffixes
     for suffix in [' jr', ' sr', ' ii', ' iii', ' iv']:
         if lower.endswith(suffix):
-            variants.append(lower[: -len(suffix)])
-    # dedupe
+            variants.append(lower[:-len(suffix)])
     seen = set()
     out = []
     for v in variants:
@@ -64,7 +59,7 @@ def generate_name_variants(fec_name: str) -> list:
 
 
 def fetch_candidates(cycle: int, office: str) -> list:
-    """Page through FEC candidates, logging fetch details."""
+    """Page through FEC candidates."""
     candidates, page = [], 1
     while True:
         url = (
@@ -80,7 +75,6 @@ def fetch_candidates(cycle: int, office: str) -> list:
             break
         results = data.get("results", [])
         if not results:
-            logger.info("No more FEC candidates", extra={"cycle": cycle, "office": office, "page": page})
             break
         candidates.extend(results)
         pages = data.get("pagination", {}).get("pages", 1)
@@ -92,57 +86,50 @@ def fetch_candidates(cycle: int, office: str) -> list:
 
 
 def build_legislator_lookup():
-    """Build lookup from (fullname, state, district) -> bioguide_id."""
+    """Build lookup from (fullname, state, district) → bioguide_id."""
     lookup = {}
     with utils.get_cursor(commit=False) as (_, cur):
         cur.execute("SELECT bioguide_id, full_name, state, district FROM legislators")
         rows = cur.fetchall()
     for biog, name, state, dist in rows:
-        key = (name.lower().strip(), state, dist)
-        lookup[key] = biog
-    logger.info("Built legislator lookup", extra={"entries": len(lookup)})
+        lookup[(name.lower().strip(), state, dist)] = biog
     return lookup
 
 
 def normalize_and_map(records, lookup, cycle, office):
     """
-    Map FEC records to bioguide IDs with overrides, fallbacks, fuzziness.
-    Summarize mismatches at end.
+    Map FEC records → bioguide IDs using overrides, fallbacks, fuzzy logic.
+    Returns both mapped rows and a Counter of unmatched entries.
     """
     rows = []
     misses = Counter()
     for rec in records:
-        fec_id   = rec.get("candidate_id")
+        fec_id = rec.get("candidate_id")
         raw_name = rec.get("name", "").strip()
-        state    = rec.get("state")
+        state = rec.get("state")
         dist_raw = rec.get("district")
         district = dist_raw if dist_raw not in (None, "", "00") else None
 
         # Manual override
         if fec_id in OVERRIDES:
-            biog = OVERRIDES[fec_id]
-            rows.append((fec_id, biog, raw_name, office, state, district, cycle, datetime.utcnow()))
+            rows.append((fec_id, OVERRIDES[fec_id], raw_name, office, state, district, cycle, datetime.utcnow()))
             continue
 
         # Exact & fallback matching
         matched = None
-        variants = generate_name_variants(raw_name)
-        for var in variants:
-            # exact state+district
+        for var in generate_name_variants(raw_name):
             key = (var, state, district)
             if key in lookup:
                 matched = lookup[key]
                 break
-            # fallback ignore district
             key2 = (var, state, None)
             if key2 in lookup:
                 matched = lookup[key2]
                 break
-        # fuzzy match on name + state
+        # Fuzzy match
         if not matched:
             names = [n for (n, st, dt) in lookup if st == state]
-            close = difflib.get_close_matches(raw_name.lower(), names, n=3, cutoff=0.8)
-            for name in close:
+            for name in difflib.get_close_matches(raw_name.lower(), names, n=3, cutoff=0.8):
                 for key in [(name, state, district), (name, state, None)]:
                     if key in lookup:
                         matched = lookup[key]
@@ -155,43 +142,47 @@ def normalize_and_map(records, lookup, cycle, office):
         else:
             misses[(raw_name, state, district)] += 1
 
-    # Log summary of mismatches
-    total_misses = sum(misses.values())
-    if total_misses:
-        top = misses.most_common(10)
-        logger.warning(
-            "FEC mapping unmatched candidates",
-            extra={"total_unmatched": total_misses, "top_unmatched": top}
-        )
-    else:
-        logger.info("All FEC candidates mapped successfully", extra={"cycle": cycle, "office": office})
-
-    logger.info(
-        "Normalized and mapped records",
-        extra={"cycle": cycle, "office": office, "mapped_rows": len(rows)}
-    )
-    return rows
+    return rows, misses
 
 
 def main():
     logger.info("Starting FEC mapping ETL run")
     lookup = build_legislator_lookup()
     all_rows = []
+    global_misses = Counter()
+    total_fetched = 0
 
     for cycle in CYCLES:
         for office in OFFICES:
             recs = fetch_candidates(cycle, office)
-            mapped = normalize_and_map(recs, lookup, cycle, office)
+            total_fetched += len(recs)
+            mapped, misses = normalize_and_map(recs, lookup, cycle, office)
             all_rows.extend(mapped)
+            global_misses.update(misses)
+
+    total_mapped = len(all_rows)
+    total_unmatched = sum(global_misses.values())
+    top_unmatched = global_misses.most_common(10)
+
+    # End-of-run summary
+    logger.info("FEC mapping ETL summary", extra={
+        "cycles": len(CYCLES),
+        "offices": len(OFFICES),
+        "total_fetched": total_fetched,
+        "total_mapped": total_mapped,
+        "total_unmatched": total_unmatched,
+        "top_unmatched": top_unmatched
+    })
 
     if not all_rows:
         logger.warning("No rows to upsert, exiting ETL")
         return
 
-    logger.info("Upserting FEC mapping rows", extra={"total_rows": len(all_rows)})
+    logger.info("Upserting FEC mapping rows", extra={"total_rows": total_mapped})
     with utils.get_cursor() as (_, cur):
         utils.bulk_upsert(cur, TABLE, all_rows, COLUMNS, CONFLICT_COLS)
-    logger.info("FEC mapping ETL completed successfully", extra={"total_rows": len(all_rows)})
+    logger.info("FEC mapping ETL completed successfully", extra={"total_rows": total_mapped})
+
 
 if __name__ == '__main__':
     main()
