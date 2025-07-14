@@ -10,10 +10,11 @@ logger = setup_logger("fec_finance_etl")
 FETCH_CANDIDATES_SQL = "SELECT fec_id, bioguide_id, cycle FROM fec_candidates"
 
 # FEC endpoints
-TOTALS_ENDPOINT = f"{config.FEC_BASE_URL}/candidate/{{fec_id}}/totals/"
-SCHEDULE_A_ENDPOINT = f"{config.FEC_BASE_URL}/schedules/schedule_a/"
+TOTALS_ENDPOINT       = f"{config.FEC_BASE_URL}/candidate/{{fec_id}}/totals/"
+SCHEDULE_A_ENDPOINT   = f"{config.FEC_BASE_URL}/schedules/schedule_a/"
+SCHEDULE_B_ENDPOINT   = f"{config.FEC_BASE_URL}/schedules/schedule_b/"
 
-# Upsert config
+# Upsert config: now including spending breakdowns
 TABLE = "campaign_finance"
 COLUMNS = [
     "legislator_id",
@@ -22,7 +23,9 @@ COLUMNS = [
     "total_spent",
     "other_federal_receipts",
     "top_donors",
-    "industry_breakdown"
+    "industry_breakdown",
+    "top_spenders",
+    "payee_breakdown"
 ]
 CONFLICT_COLS = ["legislator_id", "cycle"]
 
@@ -113,19 +116,25 @@ def main():
         leg_id = leg_map.get(bioguide)
         if not leg_id:
             logger.warning("Legislator not found in map", extra={"bioguide": bioguide})
-            continue  # skip to next candidate
+            continue
 
         # Fetch summary totals
         totals = fetch_totals(fec_id, cycle)
         if not totals:
-            continue  # skip if no summary data
+            continue
 
-        # Fetch itemized breakdowns, allow failures
+        # Itemized contributions
         donors_counter = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_organization")
         employer_counter = fetch_itemized(SCHEDULE_A_ENDPOINT, fec_id, cycle, "contributor_employer")
 
-        top_donors = build_breakdown(donors_counter)
+        # Itemized disbursements
+        spenders_counter = fetch_itemized(SCHEDULE_B_ENDPOINT, fec_id, cycle, "payee_organization")
+        payee_counter    = fetch_itemized(SCHEDULE_B_ENDPOINT, fec_id, cycle, "payee_employer")
+
+        top_donors         = build_breakdown(donors_counter)
         industry_breakdown = build_breakdown(employer_counter)
+        top_spenders       = build_breakdown(spenders_counter)
+        payee_breakdown    = build_breakdown(payee_counter)
 
         rows.append(
             (
@@ -135,7 +144,9 @@ def main():
                 totals["total_spent"],
                 totals["other_federal_receipts"],
                 json.dumps(top_donors),
-                json.dumps(industry_breakdown)
+                json.dumps(industry_breakdown),
+                json.dumps(top_spenders),
+                json.dumps(payee_breakdown)
             )
         )
 
