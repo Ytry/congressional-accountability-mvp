@@ -10,4 +10,4 @@ pytesseract
 pillow
 psycopg2-binary
 python-json-logger>=2.0
-logdna-python-handler @ git+https://github.com/logdna/python-logdna.git#egg=logdna-python-handler
+logdna>=1.0.0
