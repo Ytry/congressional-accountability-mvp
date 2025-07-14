@@ -2,10 +2,12 @@
 """
 pictorial_etl.py
 
-– Builds mapping from pictorial IDs to bioguide IDs
-– Downloads headshots via GPO Pictorial API
-– Writes debug report
-– Updates legislators.portrait_url in Postgres
+– Builds mapping from legislators-current.json → pictorial→bioguide map
+– Fetches GPO Pictorial API for portraits
+– Downloads images to `portraits/{bioguide}.jpg`
+– Writes debug JSON report
+– Updates `legislators.portrait_url` in Postgres
+– Emits a single end-of-run summary log
 """
 import sys
 import json
@@ -13,56 +15,60 @@ from pathlib import Path
 import config
 from logger import setup_logger
 from utils import fetch_with_retry, write_json, get_cursor
+from datetime import datetime
 
 # Initialize structured logger
 logger = setup_logger("pictorial_etl")
 
-# ── Configured constants ─────────────────────────────────────────────────────
-LEGIS_URL    = config.LEGIS_JSON_URL
-GPO_API_URL  = config.GPO_API_URL
-OUT_DIR      = config.PORTRAITS_DIR
-DEBUG_JSON   = config.PICT_DEBUG_JSON
-DB_URL       = config.DATABASE_URL
+# ── CONFIGURE ───────────────────────────────────────────────────────────────
+LEGIS_URL   = config.LEGIS_JSON_URL
+GPO_API_URL = config.GPO_API_URL
+OUT_DIR     = config.PORTRAITS_DIR
+DEBUG_JSON  = config.PICT_DEBUG_JSON
+DB_URL      = config.DATABASE_URL
 
-# Ensure directories exist
+# Ensure output directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 logger.info("Output directory ready", extra={"out_dir": str(OUT_DIR)})
 
-# ── 1) Build pictorial_id → bioguide_id map ─────────────────────────────────
+# ── FETCH LEGISLATORS JSON ───────────────────────────────────────────────────
 resp = fetch_with_retry(LEGIS_URL)
 if not resp:
-    logger.error("Failed to fetch legislators JSON", extra={"url": LEGIS_URL})
+    logger.error("Failed to fetch legislators list", extra={"url": LEGIS_URL})
     sys.exit(1)
 try:
     legislators = resp.json()
-    logger.info("Fetched legislators list", extra={"count": len(legislators)})
+    total_legislators = len(legislators)
+    logger.info("Fetched legislators list", extra={"count": total_legislators})
 except Exception:
     logger.exception("Failed parsing legislators JSON")
     sys.exit(1)
 
+# Build pictorial → bioguide map
 pict2bio = {
     str(p.get("id", {}).get("pictorial")): p.get("id", {}).get("bioguide")
     for p in legislators
     if p.get("id", {}).get("pictorial") and p.get("id", {}).get("bioguide")
 }
 if not pict2bio:
-    logger.error("No pictorial→bioguide mappings found")
+    logger.error("No pictorial→bioguide mappings found; aborting ETL")
     sys.exit(1)
-logger.info("Built pict2bio map", extra={"mappings": len(pict2bio)})
+logger.info("Built pictorial→bioguide map", extra={"mappings": len(pict2bio)})
 
-# ── 2) Fetch GPO Pictorial API ────────────────────────────────────────────────
+# ── FETCH GPO MEMBER COLLECTION ──────────────────────────────────────────────
 resp = fetch_with_retry(GPO_API_URL)
 if not resp:
     logger.error("Failed to fetch GPO member collection", extra={"url": GPO_API_URL})
     sys.exit(1)
 try:
     members = resp.json().get("memberCollection", [])
-    logger.info("Fetched GPO member collection", extra={"count": len(members)})
+    total_members = len(members)
+    logger.info("Fetched GPO member collection", extra={"count": total_members})
 except Exception:
     logger.exception("Failed parsing GPO JSON")
     sys.exit(1)
 
-# ── 3) Download each headshot ─────────────────────────────────────────────────
+# ── DOWNLOAD HEADSHOTS ────────────────────────────────────────────────────────
 downloaded = []
 failed = []
 for m in members:
@@ -70,46 +76,52 @@ for m in members:
     img_url = m.get("imageUrl") or ""
     bio_id  = pict2bio.get(pict_id)
     if not bio_id or not img_url:
-        logger.warning("Skipping member; missing mapping or URL", extra={"pict_id": pict_id, "bio_id": bio_id})
         failed.append(pict_id)
         continue
 
     out_path = OUT_DIR / f"{bio_id}.jpg"
     resp = fetch_with_retry(img_url)
-    if not resp:
-        logger.warning("Failed to download portrait", extra={"bio_id": bio_id, "img_url": img_url})
+    if not resp or "image" not in resp.headers.get("Content-Type", ""):
         failed.append(bio_id)
         continue
     try:
-        if "image" not in resp.headers.get("Content-Type", ""):
-            raise ValueError("Content-Type not image")
         with open(out_path, "wb") as f:
             for chunk in resp.iter_content(1024):
                 f.write(chunk)
         downloaded.append(bio_id)
-        logger.info("Downloaded portrait", extra={"bio_id": bio_id})
     except Exception:
-        logger.exception("Error writing portrait file", extra={"bio_id": bio_id})
         failed.append(bio_id)
 
-# ── 4) Write debug JSON report ────────────────────────────────────────────────
+# ── WRITE DEBUG JSON ─────────────────────────────────────────────────────────
+debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat()}
 try:
-    write_json(DEBUG_JSON, {"downloaded": downloaded, "failed": failed})
+    write_json(DEBUG_JSON, debug_data)
+    logger.info("Wrote debug JSON report", extra={"path": str(DEBUG_JSON),
+                 "downloaded": len(downloaded), "failed": len(failed)})
 except Exception:
-    sys.exit(1)
+    logger.exception("Failed to write debug JSON report")
 
-# ── 5) Update database portrait_url ───────────────────────────────────────────
-if not DB_URL:
-    logger.info("DATABASE_URL not set; skipping DB update")
-    sys.exit(0)
-
+# ── UPDATE DATABASE ──────────────────────────────────────────────────────────
 updated_count = 0
-with get_cursor() as (conn, cur):
-    for bio_id in downloaded:
-        portrait_url = f"/portraits/{bio_id}.jpg"
-        cur.execute(
-            "UPDATE legislators SET portrait_url = %s WHERE bioguide_id = %s",
-            (portrait_url, bio_id)
-        )
-        updated_count += cur.rowcount
-logger.info("Database portrait_url update complete", extra={"updated_records": updated_count})
+if DB_URL:
+    with get_cursor() as (_, cur):
+        for bio_id in downloaded:
+            portrait_url = f"/portraits/{bio_id}.jpg"
+            cur.execute(
+                "UPDATE legislators SET portrait_url = %s WHERE bioguide_id = %s",
+                (portrait_url, bio_id)
+            )
+            updated_count += cur.rowcount
+    logger.info("Database update complete", extra={"updated_records": updated_count})
+else:
+    logger.info("DATABASE_URL not set; skipped DB update")
+
+# ── END-OF-RUN SUMMARY ────────────────────────────────────────────────────────
+logger.info("Pictorial ETL summary", extra={
+    "total_legislators": total_legislators,
+    "map_size": len(pict2bio),
+    "total_members": total_members,
+    "downloaded_count": len(downloaded),
+    "failed_count": len(failed),
+    "db_updated": updated_count
+})
