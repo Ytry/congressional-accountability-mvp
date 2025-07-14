@@ -80,7 +80,7 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
         # ─── AI Prompt Handler ─────────────────────────────────
         # Always emit an INFO-level prompt after every log
         aip = logging.StreamHandler(sys.stdout)
-        aip.setLevel(logging.INFO)
+        aip.setLevel(logging.WARNING)
         # Use the same JSON formatter as base, but wrap via AIPromptFormatter
         base_fmt = jsonlogger.JsonFormatter(
             '%(timestamp)s %(service)s %(level)s %(message)s %(correlation_id)s',
