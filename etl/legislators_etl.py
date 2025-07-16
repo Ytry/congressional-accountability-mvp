@@ -14,8 +14,10 @@ logger = setup_logger("legislators_etl")
 
 # URL for legislators YAML
 CURRENT_URL = config.LEGIS_YAML_URL
-# Add URL for committee membership (align with blueprint for comprehensive assignments)
+# URL for committee membership (align with blueprint for comprehensive assignments)
 COMMITTEE_URL = config.COMMITTEE_YAML_URL  # e.g., "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/committee-membership-current.yaml"
+# URL for committees master (for names)
+COMMITTEES_MASTER_URL = config.COMMITTEES_MASTER_YAML_URL  # e.g., "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/committees-current.yaml"
 
 def compute_congress_from_date(date_str: str) -> Optional[int]:
     """
@@ -109,10 +111,52 @@ def run():
     # Load committee membership YAML (to align with blueprint for assignments)
     try:
         committee_data = load_yaml_from_url(COMMITTEE_URL)
-        logger.info("Committee YAML loaded", extra={"committees": len(committee_data)})
+        logger.info("Committee membership YAML loaded", extra={"committees": len(committee_data)})
     except Exception:
         logger.exception("Failed to load committee membership YAML from URL")
         committee_data = {}  # Proceed without, but log
+
+    # Load committees master YAML for names
+    try:
+        committees_master = load_yaml_from_url(COMMITTEES_MASTER_URL)
+        logger.info("Committees master YAML loaded", extra={"committees": len(committees_master)})
+    except Exception:
+        logger.exception("Failed to load committees master YAML from URL")
+        committees_master = []  # Proceed without
+
+    # Build committee name maps
+    parent_code_to_name = {}
+    sub_code_to_name = {}
+    for c in committees_master:
+        if 'thomas_id' in c:
+            parent_code_to_name[c['thomas_id']] = c.get('name', c['thomas_id'])
+        if 'subcommittees' in c:
+            for sub in c['subcommittees']:
+                full_sub_code = c['thomas_id'] + sub['thomas_id']
+                sub_code_to_name[full_sub_code] = sub.get('name', full_sub_code)
+
+    # Invert committee_data to bioguide: list of assignments
+    bioguide_to_committees = {}
+    for comm_id, members in committee_data.items():
+        for m in members:
+            bg = m.get('bioguide')
+            if not bg:
+                continue
+            if bg not in bioguide_to_committees:
+                bioguide_to_committees[bg] = []
+            if len(comm_id) == 4:
+                committee_name = parent_code_to_name.get(comm_id, comm_id)
+                subcommittee_name = None
+            else:
+                parent_id = comm_id[:4]
+                committee_name = parent_code_to_name.get(parent_id, parent_id)
+                subcommittee_name = sub_code_to_name.get(comm_id, comm_id)
+            role = m.get('title', 'Member').capitalize()
+            bioguide_to_committees[bg].append({
+                'committee_name': committee_name,
+                'subcommittee_name': subcommittee_name,
+                'role': role
+            })
 
     success = skipped = failed = 0
     for raw in entries:
@@ -178,33 +222,8 @@ def run():
                     update_cols=[]
                 )
 
-                # Committee assignments (from separate committee_data; current congress only)
+                # Committee assignments (from inverted bioguide_to_committees; current congress only)
                 records = []
-                if bioguide in committee_data:
-                    current_congress = compute_congress_from_date(leg["terms"][0]["start"])  # Assume latest term congress
-                    for assignment in committee_data[bioguide]:
-                        # assignment: {'name': 'Committee Name', 'rank': 1, 'party': 'R', ...} but simplify to blueprint
-                        # Note: subcommittee via 'name' if sub, but YAML has top-level committees with subcommittees?
-                        # YAML structure: committee_id: list of {'thomas_id': ..., 'rank': ..., 'title': 'Member/Ranking Member/Chair'}
-                        # Wait, committee_data is dict of committee_code: [{'bioguide': ..., 'rank': int, 'party': str, 'title': str}]
-                        # Wrong: actually, committee-membership-current.yaml is dict of committee_id: list of member dicts {'name': str, 'bioguide': str, 'party': str, 'rank': int, 'title': 'member' or 'chair' etc.}
-                        # So, to get per bioguide, need to invert or search.
-                        # For simplicity, assume we invert committee_data to bioguide: list of assignments
-                # Invert committee_data for efficiency
-                bioguide_to_committees = {}
-                for comm_id, members in committee_data.items():
-                    for m in members:
-                        bg = m['bioguide']
-                        if bg not in bioguide_to_committees:
-                            bioguide_to_committees[bg] = []
-                        # Assume no subcommittee in this YAML; it's top-level
-                        # Role: m.get('title', 'Member').capitalize()
-                        bioguide_to_committees[bg].append({
-                            'committee_name': comm_id,  # Actually, need name; YAML has code, need map or assume code=name for now
-                            'subcommittee_name': None,
-                            'role': m.get('title', 'Member')
-                        })
-
                 if bioguide in bioguide_to_committees:
                     current_congress = compute_congress_from_date(leg["terms"][0]["start"])
                     for c in bioguide_to_committees[bioguide]:
