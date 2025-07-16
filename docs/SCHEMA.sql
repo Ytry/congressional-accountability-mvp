@@ -141,6 +141,166 @@ CREATE TABLE bill_sponsorships (
     UNIQUE (legislator_id, bill_number, sponsorship_type)
 );
 
+-- ===== STAFF MEMBERS =====
+CREATE TABLE staff_members (
+    staff_id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    title TEXT,
+    office TEXT,
+    chamber TEXT,
+    phone TEXT,
+    email_opt TEXT,
+    legislator_id INT REFERENCES legislators(id),
+    committee_name TEXT,
+    date_range DATERANGE
+);
+
+-- ===== FLOOR SPEECHES =====
+CREATE TABLE floor_speeches (
+    speech_id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    chamber TEXT CHECK (chamber IN ('House', 'Senate')),
+    legislator_id INT REFERENCES legislators(id),
+    text TEXT,
+    context TEXT
+);
+
+-- ===== HEARINGS =====
+CREATE TABLE hearings (
+    hearing_id SERIAL PRIMARY KEY,
+    committee_name TEXT NOT NULL,
+    date DATE NOT NULL,
+    topic TEXT,
+    document_link TEXT
+);
+
+CREATE TABLE hearing_participants (
+    id SERIAL PRIMARY KEY,
+    hearing_id INT REFERENCES hearings(hearing_id) ON DELETE CASCADE,
+    legislator_id INT REFERENCES legislators(id),
+    role TEXT
+);
+
+-- ===== OFFICIAL LETTERS =====
+CREATE TABLE official_letters (
+    letter_id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    originator TEXT,
+    target_agency TEXT,
+    subject TEXT,
+    url TEXT
+);
+
+CREATE TABLE letter_cosigners (
+    id SERIAL PRIMARY KEY,
+    letter_id INT REFERENCES official_letters(letter_id) ON DELETE CASCADE,
+    legislator_id INT REFERENCES legislators(id)
+);
+
+-- ===== LOBBYING DISCLOSURES =====
+CREATE TABLE lobbying_filings (
+    filing_id TEXT PRIMARY KEY,
+    date_received DATE,
+    client TEXT,
+    registrant TEXT,
+    filing_type TEXT,
+    period TEXT,
+    issues TEXT,
+    amount NUMERIC
+);
+
+CREATE TABLE lobbying_targets (
+    id SERIAL PRIMARY KEY,
+    filing_id TEXT REFERENCES lobbying_filings(filing_id) ON DELETE CASCADE,
+    target_type TEXT,
+    target_name TEXT
+);
+
+-- ===== PRESS RELEASES =====
+CREATE TABLE press_releases (
+    pr_id SERIAL PRIMARY KEY,
+    legislator_id INT REFERENCES legislators(id),
+    date DATE,
+    title TEXT,
+    content TEXT,
+    url TEXT,
+    mentions_bill TEXT
+);
+
+-- ===== SOCIAL MEDIA POSTS =====
+CREATE TABLE tweets (
+    tweet_id TEXT PRIMARY KEY,
+    legislator_id INT REFERENCES legislators(id),
+    datetime TIMESTAMPTZ,
+    text TEXT,
+    retweets INT,
+    likes INT,
+    reply_count INT,
+    media_links TEXT[]
+);
+
+CREATE TABLE facebook_posts (
+    post_id TEXT PRIMARY KEY,
+    legislator_id INT REFERENCES legislators(id),
+    datetime TIMESTAMPTZ,
+    text TEXT,
+    reactions INT,
+    shares INT,
+    comments_count INT,
+    url TEXT
+);
+
+CREATE TABLE youtube_videos (
+    video_id TEXT PRIMARY KEY,
+    legislator_id INT REFERENCES legislators(id),
+    upload_datetime TIMESTAMPTZ,
+    title TEXT,
+    description TEXT,
+    view_count INT,
+    like_count INT,
+    url TEXT
+);
+
+-- ===== TRAVEL DISCLOSURES =====
+CREATE TABLE travel_disclosures (
+    travel_id SERIAL PRIMARY KEY,
+    legislator_id INT REFERENCES legislators(id),
+    sponsor TEXT,
+    destination TEXT,
+    start_date DATE,
+    end_date DATE,
+    purpose TEXT,
+    cost NUMERIC
+);
+
+-- ===== CAUCUSES =====
+CREATE TABLE caucuses (
+    caucus_id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    congress_number INT
+);
+
+CREATE TABLE caucus_memberships (
+    id SERIAL PRIMARY KEY,
+    caucus_id INT REFERENCES caucuses(caucus_id),
+    legislator_id INT REFERENCES legislators(id),
+    role_in_caucus TEXT,
+    join_date DATE
+);
+
+-- ===== PUBLIC OPINION =====
+CREATE TABLE bill_opinions (
+    id SERIAL PRIMARY KEY,
+    bill_number TEXT,
+    source TEXT,
+    date DATE,
+    support_percent NUMERIC,
+    oppose_percent NUMERIC,
+    sample_size INT,
+    details TEXT
+);
+
 -- ===== FEC CANDIDATES =====
 CREATE TABLE fec_candidates (
     fec_id       VARCHAR NOT NULL,
