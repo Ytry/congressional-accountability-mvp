@@ -29,6 +29,8 @@ DEBUG_JSON  = config.PICT_DEBUG_JSON
 DB_URL      = config.DATABASE_URL
 # Changed: Official congress.gov base URL for images (replaces bioguide; aligns with Framework source of truth: congress.gov)
 CONGRESS_IMG_BASE = "https://www.congress.gov/img/member"
+# Added: Fallback to unitedstates/images repo (aggregated from GPO; secondary cross-verification per Framework; addresses 404s for resilience per ETL Blueprint)
+FALLBACK_IMG_BASE = "https://unitedstates.github.io/images/congress/original"
 
 # Ensure output directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,6 +57,7 @@ except Exception:
 downloaded = []
 failed = []
 failed_reasons = {}  # Added: Track reasons for failures (per ETL blueprint reconciliation)
+fallback_used = 0  # Added: Track fallback usage for audit
 for p in legislators:  # Changed: Loop over legislators directly (comprehensive coverage)
     bio_id = p.get("id", {}).get("bioguide")
     if not bio_id:
@@ -63,21 +66,26 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
         logger.debug("No bioguide_id for legislator entry")
         continue
 
-    # Changed: Construct official congress.gov image URL (resolves 404s; aligns with Framework: congress.gov as primary source)
+    # Primary: Official congress.gov image URL (aligns with Framework: congress.gov as primary source)
     img_url = f"{CONGRESS_IMG_BASE}/{bio_id.lower()}_200.jpg"
-
-    out_path = OUT_DIR / f"{bio_id}.jpg"
     resp = fetch_with_retry(img_url)
-    if not resp:
-        failed.append(bio_id)
-        failed_reasons[bio_id] = "fetch_failed"
-        logger.debug(f"Fetch failed for {bio_id} at {img_url}")
-        continue
-    if "image" not in resp.headers.get("Content-Type", ""):
-        failed.append(bio_id)
-        failed_reasons[bio_id] = "invalid_content_type"
-        logger.debug(f"Invalid content type for {bio_id} at {img_url}")
-        continue
+    if resp and resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):  # Changed: Explicit check for success
+        pass  # Proceed with primary
+    else:
+        # Added: Fallback on failure (e.g., 404 for missing images; resilience per ETL Blueprint)
+        if resp:
+            logger.debug(f"Primary fetch failed (status {resp.status_code}) for {bio_id} at {img_url}")
+        else:
+            logger.debug(f"Primary fetch failed (no response) for {bio_id} at {img_url}")
+        fallback_img_url = f"{FALLBACK_IMG_BASE}/{bio_id}.jpg"
+        resp = fetch_with_retry(fallback_img_url)
+        if not resp or resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
+            failed.append(bio_id)
+            failed_reasons[bio_id] = "both_primary_and_fallback_failed"
+            logger.debug(f"Fallback also failed for {bio_id} at {fallback_img_url}")
+            continue
+        fallback_used += 1
+
     try:
         content = bytearray()
         for chunk in resp.iter_content(1024):
@@ -86,7 +94,7 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
         if len(content) == 0:
             raise ValueError("Empty image content")
         # Optional: Hash check if previous exists
-        with open(out_path, "wb") as f:
+        with open(OUT_DIR / f"{bio_id}.jpg", "wb") as f:
             f.write(content)
         downloaded.append(bio_id)
     except Exception:
@@ -96,8 +104,8 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
 
 # ── WRITE DEBUG JSON ─────────────────────────────────────────────────────────
 debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat(),
-              "source_urls": {"legis": LEGIS_URL, "congress_img_base": CONGRESS_IMG_BASE},  # Changed: Update audit trail
-              "failed_reasons": failed_reasons}  # Added: Reasons for reconciliation
+              "source_urls": {"legis": LEGIS_URL, "congress_img_base": CONGRESS_IMG_BASE, "fallback_img_base": FALLBACK_IMG_BASE},  # Changed: Update audit trail
+              "failed_reasons": failed_reasons, "fallback_used": fallback_used}  # Added: Reasons and fallback count for reconciliation
 try:
     write_json(DEBUG_JSON, debug_data)
     logger.info("Wrote debug JSON report", extra={"path": str(DEBUG_JSON),
