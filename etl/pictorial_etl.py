@@ -31,6 +31,8 @@ DB_URL      = config.DATABASE_URL
 CONGRESS_IMG_BASE = "https://www.congress.gov/img/member"
 # Added: Fallback to unitedstates/images repo (aggregated from GPO; secondary cross-verification per Framework; addresses 404s for resilience per ETL Blueprint)
 FALLBACK_IMG_BASE = "https://unitedstates.github.io/images/congress/original"
+# Added: Placeholder for new members without images (aligns with ETL Blueprint resilience to data lags)
+DEFAULT_IMG_PATH = "/portraits/default.jpg"
 
 # Ensure output directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +60,8 @@ downloaded = []
 failed = []
 failed_reasons = {}  # Added: Track reasons for failures (per ETL blueprint reconciliation)
 fallback_used = 0  # Added: Track fallback usage for audit
+new_members_failed = []  # Added: Separate tracking for new 119th Congress members (lags in images; per ETL Blueprint data freshness)
+placeholder_updates = []  # Added: For DB updates with default image
 for p in legislators:  # Changed: Loop over legislators directly (comprehensive coverage)
     bio_id = p.get("id", {}).get("bioguide")
     if not bio_id:
@@ -65,6 +69,11 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
         failed_reasons["unknown"] = "no_bioguide_id"  # Note: Aggregate unknowns
         logger.debug("No bioguide_id for legislator entry")
         continue
+
+    # Added: Detect new members (119th Congress start; handle image lags per ETL Blueprint resilience)
+    is_new_member = False
+    if 'terms' in p and p['terms'] and p['terms'][-1].get('start') == '2025-01-03':
+        is_new_member = True
 
     # Primary: Official congress.gov image URL (aligns with Framework: congress.gov as primary source)
     img_url = f"{CONGRESS_IMG_BASE}/{bio_id.lower()}_200.jpg"
@@ -80,9 +89,15 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
         fallback_img_url = f"{FALLBACK_IMG_BASE}/{bio_id}.jpg"
         resp = fetch_with_retry(fallback_img_url)
         if not resp or resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
-            failed.append(bio_id)
-            failed_reasons[bio_id] = "both_primary_and_fallback_failed"
-            logger.debug(f"Fallback also failed for {bio_id} at {fallback_img_url}")
+            if is_new_member:
+                new_members_failed.append(bio_id)
+                failed_reasons[bio_id] = "new_member_no_image_available"
+                logger.warning(f"New member {bio_id} has no image yet; using placeholder")
+                placeholder_updates.append(bio_id)  # Added: Use default for DB
+            else:
+                failed.append(bio_id)
+                failed_reasons[bio_id] = "both_primary_and_fallback_failed"
+                logger.debug(f"Fallback also failed for {bio_id} at {fallback_img_url}")
             continue
         fallback_used += 1
 
@@ -105,7 +120,8 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
 # ── WRITE DEBUG JSON ─────────────────────────────────────────────────────────
 debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat(),
               "source_urls": {"legis": LEGIS_URL, "congress_img_base": CONGRESS_IMG_BASE, "fallback_img_base": FALLBACK_IMG_BASE},  # Changed: Update audit trail
-              "failed_reasons": failed_reasons, "fallback_used": fallback_used}  # Added: Reasons and fallback count for reconciliation
+              "failed_reasons": failed_reasons, "fallback_used": fallback_used,
+              "new_members_failed": new_members_failed}  # Added: Reasons, fallback count, and new member tracking for reconciliation
 try:
     write_json(DEBUG_JSON, debug_data)
     logger.info("Wrote debug JSON report", extra={"path": str(DEBUG_JSON),
@@ -121,6 +137,9 @@ if DB_URL:
         for bio_id in downloaded:
             portrait_url = f"/portraits/{bio_id}.jpg"
             updates.append((portrait_url, bio_id))
+        # Added: Placeholder updates for new members without images
+        for bio_id in placeholder_updates:
+            updates.append((DEFAULT_IMG_PATH, bio_id))
         try:
             # Changed: Batch update with executemany
             cur.executemany(
@@ -144,6 +163,6 @@ logger.info("Pictorial ETL summary", extra={
     "failed_count": len(failed),
     "db_updated": updated_count
 })
-# Changed: Dynamic threshold based on total (e.g., >10% failures; per ETL blueprint scalability)
+# Changed: Dynamic threshold based on total (e.g., >10% failures; per ETL blueprint scalability); excludes new members to avoid false alerts on data lags
 if len(failed) > 0.1 * total_legislators:
     logger.critical("High failure count; alert admins", extra={"failed": failed, "failed_reasons": failed_reasons})
