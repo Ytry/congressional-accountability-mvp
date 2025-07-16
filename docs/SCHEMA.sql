@@ -105,7 +105,7 @@ CREATE TABLE committee_assignments (
     legislator_id     INT    REFERENCES legislators(id) ON DELETE CASCADE,
     congress          INT    NOT NULL,
     committee_name    TEXT   NOT NULL,
-    subcommittee_name TEXT,
+    subcommittee_name TEXT   NOT NULL DEFAULT '',  -- Added NOT NULL DEFAULT '' for normalization
     role              TEXT   CHECK (role IN ('Chair', 'Ranking Member', 'Member', 'Vice Chair', 'Other')), -- Expanded enum for roles
     created_at        TIMESTAMPTZ DEFAULT NOW(),
     updated_at        TIMESTAMPTZ DEFAULT NOW(),
@@ -116,7 +116,7 @@ CREATE UNIQUE INDEX uq_committee_assignments
     legislator_id,
     congress,
     committee_name,
-    COALESCE(subcommittee_name, '')
+    subcommittee_name  -- Removed COALESCE; now plain column
   );
 CREATE INDEX idx_committee_assignments_legislator_id ON committee_assignments(legislator_id);
 CREATE INDEX idx_committee_assignments_congress ON committee_assignments(congress);
