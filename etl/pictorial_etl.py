@@ -16,6 +16,7 @@ import config
 from logger import setup_logger
 from utils import fetch_with_retry, write_json, get_cursor
 from datetime import datetime
+import hashlib  # Added for image integrity check
 
 # Initialize structured logger
 logger = setup_logger("pictorial_etl")
@@ -56,6 +57,10 @@ if not pict2bio:
 logger.info("Built pictorial→bioguide map", extra={"mappings": len(pict2bio)})
 
 # ── FETCH GPO MEMBER COLLECTION ──────────────────────────────────────────────
+# Added: Check freshness (example using last-modified; adjust if API supports)
+if Path("last_gpo_etag.txt").exists():  # Placeholder for ETag/last-modified
+    # Implement check logic here; skip if unchanged
+    pass  # For now, always fetch
 resp = fetch_with_retry(GPO_API_URL)
 if not resp:
     logger.error("Failed to fetch GPO member collection", extra={"url": GPO_API_URL})
@@ -85,15 +90,23 @@ for m in members:
         failed.append(bio_id)
         continue
     try:
+        content = bytearray()
+        for chunk in resp.iter_content(1024):
+            content.extend(chunk)
+        # Added: Basic integrity check (non-zero size)
+        if len(content) == 0:
+            raise ValueError("Empty image content")
+        # Optional: Hash check if previous exists
         with open(out_path, "wb") as f:
-            for chunk in resp.iter_content(1024):
-                f.write(chunk)
+            f.write(content)
         downloaded.append(bio_id)
     except Exception:
+        logger.exception(f"Failed to download/write image for {bio_id}")
         failed.append(bio_id)
 
 # ── WRITE DEBUG JSON ─────────────────────────────────────────────────────────
-debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat()}
+debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat(),
+              "source_urls": {"legis": LEGIS_URL, "gpo": GPO_API_URL}}  # Added: Audit trail
 try:
     write_json(DEBUG_JSON, debug_data)
     logger.info("Wrote debug JSON report", extra={"path": str(DEBUG_JSON),
@@ -104,17 +117,26 @@ except Exception:
 # ── UPDATE DATABASE ──────────────────────────────────────────────────────────
 updated_count = 0
 if DB_URL:
-    with get_cursor() as (_, cur):
+    with get_cursor() as (conn, cur):  # Assume conn for commit if needed
+        updates = []
         for bio_id in downloaded:
             portrait_url = f"/portraits/{bio_id}.jpg"
-            cur.execute(
+            updates.append((portrait_url, bio_id))
+        try:
+            # Changed: Batch update with executemany
+            cur.executemany(
                 "UPDATE legislators SET portrait_url = %s WHERE bioguide_id = %s",
-                (portrait_url, bio_id)
+                updates
             )
-            updated_count += cur.rowcount
+            updated_count = cur.rowcount  # Note: rowcount for executemany is total affected
+            conn.commit()  # Explicit commit if not auto
+        except Exception:
+            logger.exception("DB update failed")
+            if conn:
+                conn.rollback()
     logger.info("Database update complete", extra={"updated_records": updated_count})
 else:
-    logger.info("DATABASE_URL not set; skipped DB update")
+    logger.warning("DATABASE_URL not set; skipped DB update")  # Changed: Warning log
 
 # ── END-OF-RUN SUMMARY ────────────────────────────────────────────────────────
 logger.info("Pictorial ETL summary", extra={
@@ -125,3 +147,6 @@ logger.info("Pictorial ETL summary", extra={
     "failed_count": len(failed),
     "db_updated": updated_count
 })
+# Added: Alert if failed > threshold (e.g., email, per ETL blueprint)
+if len(failed) > 10:  # Arbitrary threshold
+    logger.critical("High failure count; alert admins", extra={"failed": failed})
