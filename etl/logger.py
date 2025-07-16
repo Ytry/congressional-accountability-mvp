@@ -20,13 +20,23 @@ class AIPromptFormatter(jsonlogger.JsonFormatter):
         original = super().format(record)
         # Now wrap it as a prompt
         prompt = (
-            "AI_PROMPT:\n"
-            f"I have a log entry from service '{getattr(record, 'service', '')}'\n"
-            f"Level: {record.levelname}\n"
-            "Here is the full JSON log:\n"
-            f"{original}\n\n"
-            "Please propose specific code or config changes to address this issue.\n"
-        )
+    "AI_PROMPT:\n"
+    "Analyze the following structured log to suggest debugging or config fixes.\n\n"
+    "Log Summary:\n"
+    f"Service: {getattr(record, 'service', '')}\n"
+    f"Level: {record.levelname}\n"
+    f"Timestamp: {record.asctime if hasattr(record, 'asctime') else ''}\n"
+    f"Message: {record.getMessage()}\n"
+    f"Correlation ID: {getattr(record, 'correlation_id', '')}\n"
+    f"Logger Name: {record.name}\n"
+    f"Exception Info: {record.exc_info if record.exc_info else 'None'}\n\n"
+    "Full Log Entry (JSON):\n"
+    f"{original}\n\n"
+    "Please provide:\n"
+    "1. Likely root cause\n"
+    "2. Specific fixes (config/code)\n"
+    "3. Suggested unit/integration tests\n"
+)
         return prompt
 
 
