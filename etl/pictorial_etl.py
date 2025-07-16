@@ -23,10 +23,12 @@ logger = setup_logger("pictorial_etl")
 
 # ── CONFIGURE ───────────────────────────────────────────────────────────────
 LEGIS_URL   = config.LEGIS_JSON_URL
-GPO_API_URL = config.GPO_API_URL
+GPO_API_URL = config.GPO_API_URL  # Note: No longer used; retained for config compatibility
 OUT_DIR     = config.PORTRAITS_DIR
 DEBUG_JSON  = config.PICT_DEBUG_JSON
 DB_URL      = config.DATABASE_URL
+# Added: Official bioguide base URL (add to config if variable; hardcoded for simplicity, per official source)
+BIOGUIDE_IMG_BASE = "https://bioguide.congress.gov/app/images/members"
 
 # Ensure output directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,49 +47,37 @@ except Exception:
     logger.exception("Failed parsing legislators JSON")
     sys.exit(1)
 
-# Build pictorial → bioguide map
-pict2bio = {
-    str(p.get("id", {}).get("pictorial")): p.get("id", {}).get("bioguide")
-    for p in legislators
-    if p.get("id", {}).get("pictorial") and p.get("id", {}).get("bioguide")
-}
-if not pict2bio:
-    logger.error("No pictorial→bioguide mappings found; aborting ETL")
-    sys.exit(1)
-logger.info("Built pictorial→bioguide map", extra={"mappings": len(pict2bio)})
+# Removed: pictorial→bioguide map (no longer needed; using bioguide directly for resilience)
 
-# ── FETCH GPO MEMBER COLLECTION ──────────────────────────────────────────────
-# Added: Check freshness (example using last-modified; adjust if API supports)
-if Path("last_gpo_etag.txt").exists():  # Placeholder for ETag/last-modified
-    # Implement check logic here; skip if unchanged
-    pass  # For now, always fetch
-resp = fetch_with_retry(GPO_API_URL)
-if not resp:
-    logger.error("Failed to fetch GPO member collection", extra={"url": GPO_API_URL})
-    sys.exit(1)
-try:
-    members = resp.json().get("memberCollection", [])
-    total_members = len(members)
-    logger.info("Fetched GPO member collection", extra={"count": total_members})
-except Exception:
-    logger.exception("Failed parsing GPO JSON")
-    sys.exit(1)
+# Removed: FETCH GPO MEMBER COLLECTION (switched to direct bioguide source to address high failures and align with official sources)
 
 # ── DOWNLOAD HEADSHOTS ────────────────────────────────────────────────────────
 downloaded = []
 failed = []
-for m in members:
-    pict_id = str(m.get("memberId", ""))
-    img_url = m.get("imageUrl") or ""
-    bio_id  = pict2bio.get(pict_id)
-    if not bio_id or not img_url:
-        failed.append(pict_id)
+failed_reasons = {}  # Added: Track reasons for failures (per ETL blueprint reconciliation)
+for p in legislators:  # Changed: Loop over legislators directly (comprehensive coverage)
+    bio_id = p.get("id", {}).get("bioguide")
+    if not bio_id:
+        failed.append("unknown")
+        failed_reasons["unknown"] = "no_bioguide_id"  # Note: Aggregate unknowns
+        logger.debug("No bioguide_id for legislator entry")
         continue
+
+    # Changed: Construct official bioguide image URL (aligns with Framework sources: official congressional site)
+    first_letter = bio_id[0].upper()
+    img_url = f"{BIOGUIDE_IMG_BASE}/{first_letter}/{bio_id}.jpg"
 
     out_path = OUT_DIR / f"{bio_id}.jpg"
     resp = fetch_with_retry(img_url)
-    if not resp or "image" not in resp.headers.get("Content-Type", ""):
+    if not resp:
         failed.append(bio_id)
+        failed_reasons[bio_id] = "fetch_failed"
+        logger.debug(f"Fetch failed for {bio_id} at {img_url}")
+        continue
+    if "image" not in resp.headers.get("Content-Type", ""):
+        failed.append(bio_id)
+        failed_reasons[bio_id] = "invalid_content_type"
+        logger.debug(f"Invalid content type for {bio_id} at {img_url}")
         continue
     try:
         content = bytearray()
@@ -103,10 +93,12 @@ for m in members:
     except Exception:
         logger.exception(f"Failed to download/write image for {bio_id}")
         failed.append(bio_id)
+        failed_reasons[bio_id] = "write_or_integrity_failed"
 
 # ── WRITE DEBUG JSON ─────────────────────────────────────────────────────────
 debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat(),
-              "source_urls": {"legis": LEGIS_URL, "gpo": GPO_API_URL}}  # Added: Audit trail
+              "source_urls": {"legis": LEGIS_URL, "bioguide_base": BIOGUIDE_IMG_BASE},  # Changed: Update audit trail
+              "failed_reasons": failed_reasons}  # Added: Reasons for reconciliation
 try:
     write_json(DEBUG_JSON, debug_data)
     logger.info("Wrote debug JSON report", extra={"path": str(DEBUG_JSON),
@@ -141,12 +133,10 @@ else:
 # ── END-OF-RUN SUMMARY ────────────────────────────────────────────────────────
 logger.info("Pictorial ETL summary", extra={
     "total_legislators": total_legislators,
-    "map_size": len(pict2bio),
-    "total_members": total_members,
     "downloaded_count": len(downloaded),
     "failed_count": len(failed),
     "db_updated": updated_count
 })
-# Added: Alert if failed > threshold (e.g., email, per ETL blueprint)
-if len(failed) > 10:  # Arbitrary threshold
-    logger.critical("High failure count; alert admins", extra={"failed": failed})
+# Changed: Dynamic threshold based on total (e.g., >10% failures; per ETL blueprint scalability)
+if len(failed) > 0.1 * total_legislators:
+    logger.critical("High failure count; alert admins", extra={"failed": failed, "failed_reasons": failed_reasons})
