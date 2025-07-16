@@ -231,7 +231,7 @@ def run():
                             legislator_id,
                             current_congress,
                             c['committee_name'],
-                            c['subcommittee_name'],
+                            c['subcommittee_name'] or '',  # Normalize None to '' for uniqueness
                             c['role']
                         ))
                 bulk_upsert(
