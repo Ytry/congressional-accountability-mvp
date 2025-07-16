@@ -10,7 +10,7 @@ from logdna import LogDNAHandler
 import config
 
 
-class AIPromptFormatter(logging.Formatter):
+class AIPromptFormatter(jsonlogger.JsonFormatter):
     """
     Wraps any log record into an 'AI_PROMPT' block that
     asks an LLM to suggest fixes for this log entry.
@@ -31,7 +31,7 @@ class AIPromptFormatter(logging.Formatter):
 
 
 def setup_logger(service_name: str) -> logging.LoggerAdapter:
-    log_level      = config.LOG_LEVEL
+    log_level = config.LOG_LEVEL
     correlation_id = config.CORRELATION_ID or uuid.uuid4().hex
 
     logger = logging.getLogger(service_name)
@@ -57,7 +57,7 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
         fh = TimedRotatingFileHandler(
             filename=str(log_dir / f"{service_name}.log"),
             when="midnight",
-            backupCount=14,
+            backupCount=14,  # Retains logs for approximately 2 weeks
             encoding='utf-8'
         )
         fh.setLevel(log_level)
@@ -78,21 +78,13 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
             logger.addHandler(lh)
 
         # ─── AI Prompt Handler ─────────────────────────────────
-        # Always emit an INFO-level prompt after every log
+        # Emit a prompt for WARNING-level and above logs to suggest fixes
         aip = logging.StreamHandler(sys.stdout)
         aip.setLevel(logging.WARNING)
-        # Use the same JSON formatter as base, but wrap via AIPromptFormatter
-        base_fmt = jsonlogger.JsonFormatter(
+        prompt_fmt = AIPromptFormatter(
             '%(timestamp)s %(service)s %(level)s %(message)s %(correlation_id)s',
             rename_fields={'asctime': 'timestamp', 'levelname': 'level'}
         )
-        # We want the raw JSON for embedding in the prompt, so configure parent
-        parent = logging.Formatter()
-        parent.format = lambda record: base_fmt.format(record)
-        prompt_fmt = AIPromptFormatter()
-        # But AIPromptFormatter inherits from Formatter, so we override its format call
-        AIPromptFormatter.__bases__ = (logging.Formatter,)
-        AIPromptFormatter.format = AIPromptFormatter.format
         aip.setFormatter(prompt_fmt)
         logger.addHandler(aip)
 
@@ -105,8 +97,8 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
         'correlation_id': correlation_id
     })
 
-    # Global exception hook
-    if not hasattr(logger, '_exception_hooked'):
+    # Global exception hook (set only once)
+    if not getattr(sys, '_grok_exception_hooked', False):
         def handle_exception(exc_type, exc_val, exc_tb):
             if issubclass(exc_type, KeyboardInterrupt):
                 sys.__excepthook__(exc_type, exc_val, exc_tb)
@@ -114,6 +106,6 @@ def setup_logger(service_name: str) -> logging.LoggerAdapter:
             adapter.error('Unhandled exception', 
                           exc_info=(exc_type, exc_val, exc_tb))
         sys.excepthook = handle_exception
-        setattr(logger, '_exception_hooked', True)
+        setattr(sys, '_grok_exception_hooked', True)
 
     return adapter
