@@ -27,8 +27,8 @@ GPO_API_URL = config.GPO_API_URL  # Note: No longer used; retained for config co
 OUT_DIR     = config.PORTRAITS_DIR
 DEBUG_JSON  = config.PICT_DEBUG_JSON
 DB_URL      = config.DATABASE_URL
-# Added: Official bioguide base URL (add to config if variable; hardcoded for simplicity, per official source)
-BIOGUIDE_IMG_BASE = "https://bioguide.congress.gov/app/images/members"
+# Changed: Official congress.gov base URL for images (replaces bioguide; aligns with Framework source of truth: congress.gov)
+CONGRESS_IMG_BASE = "https://www.congress.gov/img/member"
 
 # Ensure output directory exists
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,9 +63,8 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
         logger.debug("No bioguide_id for legislator entry")
         continue
 
-    # Changed: Construct official bioguide image URL (aligns with Framework sources: official congressional site)
-    first_letter = bio_id[0].upper()
-    img_url = f"{BIOGUIDE_IMG_BASE}/{first_letter}/{bio_id}.jpg"
+    # Changed: Construct official congress.gov image URL (resolves 404s; aligns with Framework: congress.gov as primary source)
+    img_url = f"{CONGRESS_IMG_BASE}/{bio_id.lower()}_200.jpg"
 
     out_path = OUT_DIR / f"{bio_id}.jpg"
     resp = fetch_with_retry(img_url)
@@ -97,7 +96,7 @@ for p in legislators:  # Changed: Loop over legislators directly (comprehensive 
 
 # ── WRITE DEBUG JSON ─────────────────────────────────────────────────────────
 debug_data = {"downloaded": downloaded, "failed": failed, "timestamp": datetime.utcnow().isoformat(),
-              "source_urls": {"legis": LEGIS_URL, "bioguide_base": BIOGUIDE_IMG_BASE},  # Changed: Update audit trail
+              "source_urls": {"legis": LEGIS_URL, "congress_img_base": CONGRESS_IMG_BASE},  # Changed: Update audit trail
               "failed_reasons": failed_reasons}  # Added: Reasons for reconciliation
 try:
     write_json(DEBUG_JSON, debug_data)
