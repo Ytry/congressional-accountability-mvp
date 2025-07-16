@@ -52,6 +52,15 @@ LEGIS_YAML_URL    = (
     "https://raw.githubusercontent.com/"
     "unitedstates/congress-legislators/main/legislators-current.yaml"
 )
+# Added for committee data (aligns with blueprint for comprehensive assignments)
+COMMITTEE_YAML_URL = (
+    "https://raw.githubusercontent.com/"
+    "unitedstates/congress-legislators/main/committee-membership-current.yaml"
+)
+COMMITTEES_MASTER_YAML_URL = (
+    "https://raw.githubusercontent.com/"
+    "unitedstates/congress-legislators/main/committees-current.yaml"
+)
 GPO_API_URL       = f"https://pictorialapi.gpo.gov/api/GuideMember/GetMembers/{CONGRESS}"
 HOUSE_ROLL_URL    = "https://clerk.house.gov/evs/{year}/roll{roll:03d}.xml"
 SENATE_ROLL_URL   = (
